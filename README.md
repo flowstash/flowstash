@@ -1,2 +1,9 @@
-# flowstash
-Flowstash is a web app that helps your team work on what matters
+# Flowstash
+
+Flowstash shows all your dependency and framework versions in one place.
+
+This is a work in progress.
+
+## License
+
+MIT
