@@ -1,6 +1,6 @@
 # Flowstash
 
-Flowstash shows all your dependency and framework versions in one place.
+Slightly more than a notepad, slightly less than a to do list app. Flowstash is a place to organize and act on creative ideas.
 
 This is a work in progress.
 
