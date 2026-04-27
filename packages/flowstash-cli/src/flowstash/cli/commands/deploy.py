@@ -13,12 +13,12 @@ console = Console()
 
 # Status labels shown to the user while polling
 _STATUS_LABELS = {
-    "QUEUED":         "Queued, waiting for deployment to start...",
-    "DEPLOYING":      "Deploying services to Cloud Run...",
-    "HEALTH_CHECK":   "Health-checking API and Worker...",
+    "QUEUED": "Queued, waiting for deployment to start...",
+    "DEPLOYING": "Deploying services...",
+    "HEALTH_CHECK": "Health-checking API and Worker...",
     "SYNCING_SCHEDULES": "Fetching and syncing scheduled tasks...",
-    "DEPLOYED":       "Deployed successfully ✓",
-    "FAILED":         "Deployment failed.",
+    "DEPLOYED": "Deployed successfully ✓",
+    "FAILED": "Deployment failed.",
 }
 
 _TERMINAL_STATUSES = {"DEPLOYED", "FAILED"}
@@ -27,7 +27,9 @@ _TERMINAL_STATUSES = {"DEPLOYED", "FAILED"}
 async def run_deploy_flow(env: str, artifact_id: Optional[str] = None):
     project_config = load_project_config()
     if not project_config:
-        console.print("[red]No .flowstash found. Please run 'flowstash init' first.[/red]")
+        console.print(
+            "[red]No .flowstash found. Please run 'flowstash init' first.[/red]"
+        )
         raise typer.Exit(code=1)
 
     project_id = project_config.project_id
@@ -51,11 +53,14 @@ async def run_deploy_flow(env: str, artifact_id: Optional[str] = None):
     ) as progress:
         # 2. Trigger deployment
         task = progress.add_task(description="Triggering deployment...", total=None)
-        deploy_data = await api.post("/v1/deploy", json={
-            "project_id": project_id,
-            "artifact_id": artifact_id,
-            "env_vars": {"ENVIRONMENT": env}
-        })
+        deploy_data = await api.post(
+            "/v1/deploy",
+            json={
+                "project_id": project_id,
+                "artifact_id": artifact_id,
+                "env_vars": {"ENVIRONMENT": env},
+            },
+        )
         deploy_id = deploy_data["deploy_id"]
         progress.update(task, description=f"Deployment triggered (ID: {deploy_id}).")
 
@@ -85,18 +90,25 @@ async def run_deploy_flow(env: str, artifact_id: Optional[str] = None):
 @app.command()
 def deploy(
     env: str = typer.Argument(..., help="Environment to deploy to"),
-    artifact: Optional[str] = typer.Option(None, "--artifact", "-a", help="Artifact ID to deploy"),
-    non_interactive: bool = typer.Option(False, "--non-interactive", help="Do not ask for confirmation")
+    artifact: Optional[str] = typer.Option(
+        None, "--artifact", "-a", help="Artifact ID to deploy"
+    ),
+    non_interactive: bool = typer.Option(
+        False, "--non-interactive", help="Do not ask for confirmation"
+    ),
 ):
     """Deploy an artifact to the managed platform for a specified environment."""
     project_config = load_project_config()
     if not project_config:
-        console.print("[red]No .flowstash found. Please run 'flowstash init' first.[/red]")
+        console.print(
+            "[red]No .flowstash found. Please run 'flowstash init' first.[/red]"
+        )
         raise typer.Exit(code=1)
 
     # Ask for confirmation unless non-interactive is provided
     if not non_interactive:
         from rich.prompt import Confirm
+
         if not Confirm.ask(f"Are you sure you want to deploy to '{env}'?"):
             console.print("Deployment cancelled.")
             raise typer.Exit(code=0)
@@ -109,21 +121,31 @@ def deploy(
             break
 
     if not is_managed:
-        console.print(f"[red]Environment '{env}' is not managed. Deployment is only supported for managed environments.[/red]")
-        console.print("[yellow]Update your .flowstash environments if this is incorrect.[/yellow]")
+        console.print(
+            f"[red]Environment '{env}' is not managed. Deployment is only supported for managed environments.[/red]"
+        )
+        console.print(
+            "[yellow]Update your .flowstash environments if this is incorrect.[/yellow]"
+        )
         raise typer.Exit(code=1)
 
     project_id = project_config.project_id
     if not project_id:
         if not non_interactive:
             from rich.prompt import Confirm
-            if Confirm.ask("Project ID not found. Would you like to link to a managed project now?"):
+
+            if Confirm.ask(
+                "Project ID not found. Would you like to link to a managed project now?"
+            ):
                 from .project import _link_project
+
                 _link_project(project_config)
                 project_id = project_config.project_id
 
         if not project_id:
-            console.print("[red]project_id not found in .flowstash. Use 'flowstash init' or link to a project.[/red]")
+            console.print(
+                "[red]project_id not found in .flowstash. Use 'flowstash init' or link to a project.[/red]"
+            )
             raise typer.Exit(code=1)
 
     result = asyncio.run(run_deploy_flow(env, artifact))
@@ -133,11 +155,13 @@ def deploy(
     console.print(f"  Deployment ID : [bold]{result['deploy_id']}[/bold]")
     if api_url:
         console.print(f"  API URL       : [bold]{api_url}[/bold]")
-    
+
     scheduled_tasks = result.get("scheduled_tasks")
     if scheduled_tasks:
         console.print("  Scheduled Tasks:")
         for task in scheduled_tasks:
-            console.print(f"    - [cyan]{task['task_name']}[/cyan] : [yellow]{task['cron']}[/yellow]")
+            console.print(
+                f"    - [cyan]{task['task_name']}[/cyan] : [yellow]{task['cron']}[/yellow]"
+            )
     elif scheduled_tasks is not None:
         console.print("  Scheduled Tasks: [dim]None[/dim]")

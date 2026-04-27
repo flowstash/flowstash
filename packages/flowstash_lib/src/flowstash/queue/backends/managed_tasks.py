@@ -66,13 +66,11 @@ class ManagedTasksBackend(TaskBackend):
     ):
         self.api_url = api_url.rstrip("/")
         self.auth_token = auth_token
-        # Use the worker's own URL if available; fall back to placeholder so the
-        # server can resolve it from Firestore. FLOWSTASH_API_URL is the *platform*
-        # API URL, not the worker URL — intentionally not in this fallback chain.
+
         self.service_url = (
             service_url
             or os.environ.get("SERVICE_URL")
-            or "SERVICE_URL"  # placeholder — server resolves via Firestore
+            or "SERVICE_URL" 
         )
         self.project_id = (
             project_id
@@ -86,10 +84,7 @@ class ManagedTasksBackend(TaskBackend):
             raise ValueError(
                 "project_id is not set. Provide it as an argument or set MANAGED_PROJECT_ID env var."
             )
-        if self.service_url == "SERVICE_URL":
-            raise ValueError(
-                "service_url is not set. Provide it as an argument or set SERVICE_URL env var."
-            )
+      
         if not self.environment:
             raise ValueError(
                 "environment is not set. Provide it as an argument or set ENVIRONMENT env var."
