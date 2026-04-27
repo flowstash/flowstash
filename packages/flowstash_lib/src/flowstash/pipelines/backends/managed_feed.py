@@ -4,6 +4,7 @@ Managed Feed Backend — HTTP proxy to the Integrator Platform API.
 Drop-in replacement for RecordsFeed's Redis-based publishing when
 running in the managed deployment mode. No Redis or GCP SDK dependency.
 """
+
 import asyncio
 import json
 import logging
@@ -33,13 +34,36 @@ class ManagedFeedBackend:
     The platform API handles deduplication using Firestore transactions.
     """
 
-    def __init__(self, api_url: str, auth_token: str):
+    def __init__(
+        self,
+        api_url: str,
+        auth_token: str,
+        project_id: Optional[str] = None,
+        environment: Optional[str] = None,
+    ):
         """
         Args:
             api_url: Base URL of the platform API.
             auth_token: JWT token for authentication.
+            project_id: Logical project identifier (injected as MANAGED_PROJECT_ID at deploy time).
+            environment: Deployment environment, e.g. "prod" or "dev"
+              (injected as ENVIRONMENT at deploy time).
         """
+        import os
+
         self.api_url = api_url.rstrip("/")
+        self.project_id = (
+            project_id
+            or os.environ.get("MANAGED_PROJECT_ID")
+            or os.environ.get("FLOWSTASH_PROJECT_ID")
+        )
+        self.environment = environment or os.environ.get("ENVIRONMENT")
+
+        if not self.project_id or not self.environment:
+            raise ValueError(
+                "ManagedFeedBackend requires project_id and environment. "
+                "Ensure MANAGED_PROJECT_ID and ENVIRONMENT are set in the environment variables."
+            )
         self._client = httpx.AsyncClient(
             base_url=self.api_url,
             headers={
@@ -82,21 +106,32 @@ class ManagedFeedBackend:
             raw_data = json.dumps(record.data).encode("utf-8")
             if len(raw_data) > _BLOB_OFFLOAD_THRESHOLD_BYTES:
                 from flowstash.observability.registry import get_blob_store
-                blob_path = f"feeds/{feed_id}/{record.record_type or 'record'}/{dedupe_key}"
+
+                blob_path = (
+                    f"feeds/{feed_id}/{record.record_type or 'record'}/{dedupe_key}"
+                )
                 try:
                     store = get_blob_store()
-                    
+
                     # Validation: Managed backend requires a remote/shared blob store for > 1MB records.
                     # We check against known local/noop stores.
-                    from flowstash.observability.registry import NoOpBlobStore, ConsoleBlobStore, FileStore 
+                    from flowstash.observability.registry import (
+                        NoOpBlobStore,
+                        ConsoleBlobStore,
+                        FileStore,
+                    )
 
-                    if store.__class__.__name__ in ("NoOpBlobStore", "ConsoleBlobStore", "FileStore"):
-                         raise ValueError(
-                             f"Record payload ({len(raw_data)} bytes) exceeds the 1MB limit for Managed Backend. "
-                             "A shared remote BlobStore (e.g., Google Cloud Storage) must be configured in "
-                             "your observability settings to offload large records. "
-                             "Local file-based stores are not supported as the API and Worker run in isolated environments."
-                         )
+                    if store.__class__.__name__ in (
+                        "NoOpBlobStore",
+                        "ConsoleBlobStore",
+                        "FileStore",
+                    ):
+                        raise ValueError(
+                            f"Record payload ({len(raw_data)} bytes) exceeds the 1MB limit for Managed Backend. "
+                            "A shared remote BlobStore (e.g., Google Cloud Storage) must be configured in "
+                            "your observability settings to offload large records. "
+                            "Local file-based stores are not supported as the API and Worker run in isolated environments."
+                        )
 
                     blob_ref, _, _ = store.put(
                         path_hint=blob_path,
@@ -115,7 +150,9 @@ class ManagedFeedBackend:
         except ValueError:
             raise
         except Exception as serial_err:
-            logger.warning(f"Could not serialize record data for size check: {serial_err}")
+            logger.warning(
+                f"Could not serialize record data for size check: {serial_err}"
+            )
 
         payload = {
             "dedupe_key": dedupe_key,
@@ -124,6 +161,8 @@ class ManagedFeedBackend:
             "blob_ref": blob_ref,
             "record_type": record.record_type,
             "record_id": record.record_id,
+            "project_id": self.project_id,
+            "environment": self.environment,
             "source_integration": ctx.integration if ctx else None,
             "source_pipeline": ctx.integration_pipeline if ctx else None,
             "source_run_id": ctx.run_id if ctx else None,
@@ -151,7 +190,7 @@ class ManagedFeedBackend:
                         response=response,
                     )
                     if attempt < _MAX_RETRIES:
-                        delay = _RETRY_BACKOFF_BASE_SEC * (2 ** attempt)
+                        delay = _RETRY_BACKOFF_BASE_SEC * (2**attempt)
                         logger.warning(
                             f"Publish transient error (attempt {attempt + 1}/{_MAX_RETRIES + 1}) "
                             f"for feed={feed_id} key={dedupe_key}: {response.status_code}. "
@@ -165,10 +204,14 @@ class ManagedFeedBackend:
                 status = result.get("status", "unknown")
                 break  # success — exit retry loop
 
-            except (httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError) as e:
+            except (
+                httpx.ConnectError,
+                httpx.TimeoutException,
+                httpx.RemoteProtocolError,
+            ) as e:
                 last_exc = e
                 if attempt < _MAX_RETRIES:
-                    delay = _RETRY_BACKOFF_BASE_SEC * (2 ** attempt)
+                    delay = _RETRY_BACKOFF_BASE_SEC * (2**attempt)
                     logger.warning(
                         f"Publish connection error (attempt {attempt + 1}/{_MAX_RETRIES + 1}) "
                         f"for feed={feed_id} key={dedupe_key}: {e}. "

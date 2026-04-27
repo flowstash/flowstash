@@ -4,6 +4,7 @@ Managed Tasks Backend — HTTP proxy to the Integrator Platform API.
 This is a lightweight TaskBackend implementation that submits tasks and
 registers schedules via the managed platform API. No GCP SDK dependency.
 """
+
 import os
 import json
 import logging
@@ -47,7 +48,12 @@ class ManagedTasksBackend(TaskBackend):
     Requires:
     - api_url: Base URL of the platform API (e.g. https://api.flowstash.dev)
     - auth_token: JWT token for authentication
-    - service_url: This tenant service's URL (for Cloud Tasks callbacks)
+    - service_url: This worker's own URL (for Cloud Tasks callbacks).
+      Defaults to SERVICE_URL env var. If neither is set the literal placeholder
+      "SERVICE_URL" is sent and the managed API resolves it via Firestore.
+    - project_id: Logical project identifier (injected as MANAGED_PROJECT_ID at deploy time).
+    - environment: Deployment environment, e.g. "prod" or "dev"
+      (injected as ENVIRONMENT at deploy time).
     """
 
     def __init__(
@@ -55,10 +61,40 @@ class ManagedTasksBackend(TaskBackend):
         api_url: str,
         auth_token: str,
         service_url: Optional[str] = None,
+        project_id: Optional[str] = None,
+        environment: Optional[str] = None,
     ):
         self.api_url = api_url.rstrip("/")
         self.auth_token = auth_token
-        self.service_url = service_url or os.environ.get("SERVICE_URL") or os.environ.get("FLOWSTASH_API_URL") or "https://api.flowstash.dev"
+        # Use the worker's own URL if available; fall back to placeholder so the
+        # server can resolve it from Firestore. FLOWSTASH_API_URL is the *platform*
+        # API URL, not the worker URL — intentionally not in this fallback chain.
+        self.service_url = (
+            service_url
+            or os.environ.get("SERVICE_URL")
+            or "SERVICE_URL"  # placeholder — server resolves via Firestore
+        )
+        self.project_id = (
+            project_id
+            or os.environ.get("MANAGED_PROJECT_ID")
+            or os.environ.get("FLOWSTASH_PROJECT_ID")
+        )
+        self.environment = environment or os.environ.get("ENVIRONMENT")
+
+        # Validate required configuration
+        if not self.project_id:
+            raise ValueError(
+                "project_id is not set. Provide it as an argument or set MANAGED_PROJECT_ID env var."
+            )
+        if self.service_url == "SERVICE_URL":
+            raise ValueError(
+                "service_url is not set. Provide it as an argument or set SERVICE_URL env var."
+            )
+        if not self.environment:
+            raise ValueError(
+                "environment is not set. Provide it as an argument or set ENVIRONMENT env var."
+            )
+
         self._client = httpx.Client(
             base_url=self.api_url,
             headers={
@@ -71,7 +107,11 @@ class ManagedTasksBackend(TaskBackend):
 
     def _serialize_args(self, func: Callable, args: tuple, kwargs: dict) -> dict:
         """Serialize function reference and arguments to a JSON-safe payload."""
-        func_ref = f"{func.__module__}.{func.__name__}" if hasattr(func, "__module__") else str(func)
+        func_ref = (
+            f"{func.__module__}.{func.__name__}"
+            if hasattr(func, "__module__")
+            else str(func)
+        )
         return {
             "func_ref": func_ref,
             "args": list(args),
@@ -92,13 +132,20 @@ class ManagedTasksBackend(TaskBackend):
         target_url = f"{self.service_url}/handle_task"
 
         payload = {
-            "queue": "default",
             "target_url": target_url,
-            "task_name": f"{func.__module__}.{func.__name__}" if hasattr(func, "__module__") else str(func),
+            "task_name": (
+                f"{func.__module__}.{func.__name__}"
+                if hasattr(func, "__module__")
+                else str(func)
+            ),
+            "project_id": self.project_id,
+            "environment": self.environment,
             "payload": {
                 **self._serialize_args(func, args, kwargs),
-                "integration": integration or (context.integration if context else None),
-                "pipeline": pipeline or (context.integration_pipeline if context else None),
+                "integration": integration
+                or (context.integration if context else None),
+                "pipeline": pipeline
+                or (context.integration_pipeline if context else None),
                 "run_id": context.run_id if context else str(uuid.uuid4()),
                 "tags": dict(tags or {}),
             },
@@ -136,13 +183,20 @@ class ManagedTasksBackend(TaskBackend):
             schedule_time = None
 
         payload = {
-            "queue": "default",
             "target_url": target_url,
-            "task_name": f"{func.__module__}.{func.__name__}" if hasattr(func, "__module__") else str(func),
+            "task_name": (
+                f"{func.__module__}.{func.__name__}"
+                if hasattr(func, "__module__")
+                else str(func)
+            ),
+            "project_id": self.project_id,
+            "environment": self.environment,
             "payload": {
                 **self._serialize_args(func, args, kwargs),
-                "integration": integration or (context.integration if context else None),
-                "pipeline": pipeline or (context.integration_pipeline if context else None),
+                "integration": integration
+                or (context.integration if context else None),
+                "pipeline": pipeline
+                or (context.integration_pipeline if context else None),
                 "run_id": context.run_id if context else str(uuid.uuid4()),
                 "tags": dict(tags or {}),
             },
@@ -210,4 +264,3 @@ class ManagedTasksBackend(TaskBackend):
         We do nothing here.
         """
         pass
-

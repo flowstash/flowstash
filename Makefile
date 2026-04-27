@@ -3,9 +3,9 @@
 # Configuration
 BASE_IMAGE_REPO ?= flowstash/flowstash-base
 BASE_IMAGE_TAG ?= latest
-MANAGED_API_IMAGE ?= us-east1-docker.pkg.dev/easypie-prod-411815/flowstash-container-repo/flowstash-api
+MANAGED_API_IMAGE ?= flowstash/flowstash-base
 
-.PHONY: build-base publish-base deploy-managed
+.PHONY: build-base publish-base
 
 # Build the base docker image for x86 architecture (linux/amd64)
 # This is necessary when building on ARM-based Macs (M1/M2/M3/M4) for x86 targets
@@ -17,18 +17,10 @@ publish-base: build-base
 	docker tag flowstash-base:$(BASE_IMAGE_TAG) $(BASE_IMAGE_REPO):$(BASE_IMAGE_TAG)
 	docker push $(BASE_IMAGE_REPO):$(BASE_IMAGE_TAG)
 
-# Deploy the managed service API to Google Artifact Registry
-deploy-managed:
-	docker build --platform linux/amd64 -t managed-api -f managed/Dockerfile .
-	docker tag managed-api $(MANAGED_API_IMAGE)
-	docker push $(MANAGED_API_IMAGE)
-	kubectl rollout restart deployment flowstash-api --context=ep-prod
-# kubectl apply -f managed/deployment/k8s/api-deployment.yaml --context=ep-prod 
 
-.PHONY: install test lint format build release-check publish clean bump-version
 
-install:
-	poetry install
+.PHONY: test lint format build release-check publish clean bump-version
+
 
 test:
 	poetry run pytest

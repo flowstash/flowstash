@@ -1,6 +1,17 @@
-# flowstash Monorepo
 
-Welcome to the flowstash monorepo. This repository contains multiple publishable packages for the flowstash managed integration framework.
+# TODO write nicer
+- install: poetry install / uv install
+
+- form
+  
+
+
+
+
+
+# flowstash 
+
+Welcome to the flowstash . This repository contains multiple publishable packages for the flowstash managed integration framework.
 
 ## Package Map & Dependency Graph
 
