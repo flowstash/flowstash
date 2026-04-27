@@ -1,0 +1,34 @@
+version: '3.8'
+services:
+  api:
+    build:
+      context: ../..
+      dockerfile: deployment/shared/api.Dockerfile
+    image: flowstash-{project_name_slug}-api:latest
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - ENVIRONMENT={env}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - redis
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: deployment/shared/worker.Dockerfile
+    image: flowstash-{project_name_slug}-worker:latest
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - ENVIRONMENT={env}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"

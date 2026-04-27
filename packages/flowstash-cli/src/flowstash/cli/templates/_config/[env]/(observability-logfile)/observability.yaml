@@ -1,0 +1,6 @@
+storeType: local
+localStorePath: logs/observability
+
+logging:
+  enabled: true
+  minLevel: INFO

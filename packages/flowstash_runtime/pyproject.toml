@@ -1,0 +1,28 @@
+[project]
+name = "flowstash-runtime"
+version = "0.3.0"
+description = "Actual runtime engine and bootstrap layer for the flowstash platform."
+authors = [{name = "juraj.bezdek@gmail.com", email = "juraj.bezdek@gmail.com"}]
+requires-python = ">=3.11"
+dependencies = [
+    "flowstash-clients>=0.3.0,<0.4.0",
+    "flowstash-lib>=0.3.0,<0.4.0",
+    "fastapi>=0.110.0",
+    "uvicorn>=0.29.0",
+    "dramatiq>=1.16.0",
+    "apscheduler>=3.11.0",
+    "pyyaml>=6.0.1"
+]
+
+[build-system]
+requires = ["poetry-core>=2.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+packages = [
+    { include = "flowstash", from = "src" }
+]
+
+[tool.poetry.dependencies]
+flowstash-lib = { path = "../flowstash_lib", develop = true }
+flowstash-clients = { path = "../flowstash_clients", develop = true }

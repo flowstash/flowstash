@@ -1,0 +1,40 @@
+[project]
+name = "{project_name}-app"
+version = "0.1.0"
+description = "flowstash application {project_name}"
+requires-python = ">=3.11"
+
+# Base dependencies (required by both API and Worker)
+dependencies = [
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+
+# API-only dependencies
+api = [
+    "fastapi>=0.100.0",
+    "uvicorn>=0.23.0",
+]
+
+# Worker-only dependencies
+worker = [
+    "dramatiq[redis]>=1.14.0",
+]
+
+# Development dependencies (optional)
+dev = [
+    "pytest>=7.0",
+    "ipython>=8.0",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-v -s"
+testpaths = ["tests"]
+python_files = "test_*.py"

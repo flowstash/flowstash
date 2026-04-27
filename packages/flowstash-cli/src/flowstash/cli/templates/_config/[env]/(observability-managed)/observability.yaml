@@ -1,0 +1,6 @@
+storeType: managed
+managedApiKey: ${FLOWSTASH_API_KEY}
+
+logging:
+  enabled: true
+  minLevel: INFO

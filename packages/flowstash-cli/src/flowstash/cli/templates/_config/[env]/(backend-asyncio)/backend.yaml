@@ -1,0 +1,8 @@
+backend:
+  type: asyncio
+
+state_store:
+  type: sqlite
+
+webhooks:
+  prefix: /webhooks

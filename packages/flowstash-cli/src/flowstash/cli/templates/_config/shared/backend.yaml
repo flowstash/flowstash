@@ -1,0 +1,80 @@
+# =============================================================================
+# backend.yaml — Runtime configuration reference
+# =============================================================================
+# This file controls the task-queue backend, state store, and webhook ingress.
+# All top-level keys are optional; defaults are shown in comments.
+# Any key can be overridden in environment-specific config files (e.g. /config/dev/backend.yaml).
+# =============================================================================
+
+
+# SAMPLE CONFIGURATION
+backend:
+  type: asyncio
+webhooks:
+  prefix: /webhooks
+
+
+
+# -----------------------------------------------------------------------------
+# backend — Task queue backend
+# -----------------------------------------------------------------------------
+# Controls how tasks are dispatched and executed.
+#
+# type (required):
+#   asyncio   — In-process async execution. No external services needed.
+#               Ideal for development and single-process deployments.
+#   dramatiq  — Dramatiq worker queue backed by Redis (default).
+#               Requires a running Redis instance and separate worker process.
+#   managed   — Managed platform (Flowstash Cloud Tasks via API).
+#               Requires FLOWSTASH_API_URL and FLOWSTASH_API_KEY env vars
+#               (or managed state_store with base_url / api_key set).
+#
+# backend:
+#   type: dramatiq          # asyncio | dramatiq | managed
+#
+#   # dramatiq-specific options (only used when type: dramatiq)
+#   dramatiq:
+#     redis_url: redis://localhost:6379/0
+#     # Redis connection string.
+#     # Falls back to the REDIS_URL environment variable when omitted.
+
+
+# -----------------------------------------------------------------------------
+# state_store — Persistent state storage
+# -----------------------------------------------------------------------------
+# Stores pipeline/task state between steps.
+#
+# type (required):
+#   redis    — Redis-backed store (default). Recommended for production.
+#   sqlite   — File-based SQLite store. Good for local dev / single-node.
+#   managed  — HTTP-backed store via Flowstash managed API.
+#
+# --- redis (default) ---------------------------------------------------------
+# state_store:
+#   type: redis
+#   redis:
+#     redis_url: redis://localhost:6379/0
+#     # Falls back to the REDIS_URL environment variable when omitted.
+#
+# --- sqlite ------------------------------------------------------------------
+# state_store:
+#   type: sqlite
+#   sqlite:
+#     db_path: .flowstash_state.db   # Path to the SQLite database file.
+#
+# --- managed -----------------------------------------------------------------
+# state_store:
+#   type: managed
+#   managed:
+#     base_url: https://api.flowstash.io   # Falls back to FLOWSTASH_API_URL env var.
+#     api_key:  sk-...                     # Falls back to FLOWSTASH_API_KEY env var.
+
+
+# -----------------------------------------------------------------------------
+# webhooks — Webhook ingress configuration
+# -----------------------------------------------------------------------------
+# Controls the URL prefix under which webhook routes are registered.
+#
+# prefix: /webhooks   # All webhook endpoints are mounted under this path.
+#                     # e.g. POST /webhooks/my-trigger
+

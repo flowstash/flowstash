@@ -1,0 +1,27 @@
+[project]
+name = "flowstash"
+version = "0.3.0"
+description = "Convenience meta-package for the flowstash managed platform."
+authors = [{name = "juraj.bezdek@gmail.com", email = "juraj.bezdek@gmail.com"}]
+requires-python = ">=3.11"
+dependencies = [
+    "flowstash-cli>=0.3.0,<0.4.0",
+    "flowstash-runtime>=0.3.0,<0.4.0",
+    "flowstash-lib>=0.3.0,<0.4.0",
+    "flowstash-clients>=0.3.0,<0.4.0"
+]
+
+[build-system]
+requires = ["poetry-core>=2.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+packages = [
+    { include = "flowstash_meta", from = "src" }
+]
+
+[tool.poetry.dependencies]
+flowstash-cli = { path = "../flowstash-cli", develop = true }
+flowstash-runtime = { path = "../flowstash_runtime", develop = true }
+flowstash-lib = { path = "../flowstash_lib", develop = true }
+flowstash-clients = { path = "../flowstash_clients", develop = true }

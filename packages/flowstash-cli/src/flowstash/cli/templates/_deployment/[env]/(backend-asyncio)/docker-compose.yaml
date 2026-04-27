@@ -1,0 +1,24 @@
+version: '3.8'
+services:
+  api:
+    build:
+      context: ../..
+      dockerfile: deployment/shared/api.Dockerfile
+    image: flowstash-{project_name_slug}-api:latest
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT={env}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: deployment/shared/worker.Dockerfile
+    image: flowstash-{project_name_slug}-worker:latest
+    environment:
+      - ENVIRONMENT={env}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+

@@ -1,0 +1,8 @@
+backend:
+  type: managed
+
+state_store:
+  type: managed
+
+webhooks:
+  prefix: /webhooks

@@ -1,0 +1,8 @@
+backend:
+  type: dramatiq
+
+state_store:
+  type: redis
+
+webhooks:
+  prefix: /webhooks

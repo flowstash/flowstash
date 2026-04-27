@@ -1,0 +1,54 @@
+client_id: demoClient
+baseUrl: https://jsonplaceholder.typicode.com
+timeout: 10
+handleRedirects: false
+# Authentication configuration (OAuth2 example)
+auth:
+  type: oauth2
+  client_id: "${DEMO_CLIENT_ID}"
+  client_secret: "${DEMO_CLIENT_SECRET}"
+  token_url: "https://auth.example.com/token"
+  refresh_token: null
+  scopes: []
+  extra_params: {}
+
+# Authentication Alternatives 
+# ------------------------------------------s
+# Basic Auth:
+# auth:
+#   type: basic
+#   username: "${DEMO_USERNAME}"
+#   password: "${DEMO_PASSWORD}"
+#
+# API Key Auth:
+# auth:
+#   type: api_key
+#   key: "X-API-Key"
+#   value: "${DEMO_API_KEY}"
+#   in: header # Supported values: header, query
+
+# Retry configuration
+retry:
+  maxRetries: 0
+  whitelist: [] # Keywords in response to retry (e.g., ["rate limit"])
+  blacklist: [] # Keywords in response NOT to retry (e.g., ["400"])
+
+# Extra parameters (e.g., global headers)
+extra:
+  headers:
+    User-Agent: DemoClient/1.0
+
+# Traffic Governance (Suppression & Mocking)
+# ------------------------------------------
+# For testing purposes, you can suppress certain API calls and provide mock responses, 
+# to avoid hitting real endpoints during development or testing.
+# --- Example suppression configuration:
+# suppress:
+#   - path: "/api/v1/users/**"
+#     POST:
+#       behaviour: mock
+#       mock-response:
+#         status: 200
+#         content: '{"id": 1, "name": "Mocked User"}'
+#     "*":
+#       behaviour: raise

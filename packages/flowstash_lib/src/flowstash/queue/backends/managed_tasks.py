@@ -1,0 +1,213 @@
+"""
+Managed Tasks Backend — HTTP proxy to the Integrator Platform API.
+
+This is a lightweight TaskBackend implementation that submits tasks and
+registers schedules via the managed platform API. No GCP SDK dependency.
+"""
+import os
+import json
+import logging
+import uuid
+from typing import Any, Callable, Optional, Mapping, List, Union, Dict
+
+import httpx
+
+from flowstash.queue.backend import TaskBackend, JobHandle, Schedule
+from flowstash.context import IntegrationContext
+
+logger = logging.getLogger(__name__)
+
+
+class ManagedJobHandle:
+    """Job handle for tasks submitted to the managed platform."""
+
+    def __init__(self, task_id: str, tags: Optional[Mapping[str, Any]] = None):
+        self.id = task_id
+        self.tags = tags or {}
+        self.schedule = None
+        self.scheduled_job_id = None
+
+    def status(self) -> str:
+        return "submitted"
+
+    async def result(self, timeout: Optional[float] = None) -> Any:
+        raise NotImplementedError(
+            "ManagedTasksBackend does not support awaiting results. "
+            "Tasks are executed asynchronously via Cloud Tasks."
+        )
+
+    def cancel(self) -> bool:
+        return False
+
+
+class ManagedTasksBackend(TaskBackend):
+    """
+    TaskBackend that proxies requests to the Integrator Platform API.
+
+    Requires:
+    - api_url: Base URL of the platform API (e.g. https://api.flowstash.dev)
+    - auth_token: JWT token for authentication
+    - service_url: This tenant service's URL (for Cloud Tasks callbacks)
+    """
+
+    def __init__(
+        self,
+        api_url: str,
+        auth_token: str,
+        service_url: Optional[str] = None,
+    ):
+        self.api_url = api_url.rstrip("/")
+        self.auth_token = auth_token
+        self.service_url = service_url or os.environ.get("SERVICE_URL") or os.environ.get("FLOWSTASH_API_URL") or "https://api.flowstash.dev"
+        self._client = httpx.Client(
+            base_url=self.api_url,
+            headers={
+                "Authorization": f"Bearer {self.auth_token}",
+                "Content-Type": "application/json",
+            },
+            timeout=30.0,
+        )
+        self._registered_tasks: List[Dict[str, Any]] = []
+
+    def _serialize_args(self, func: Callable, args: tuple, kwargs: dict) -> dict:
+        """Serialize function reference and arguments to a JSON-safe payload."""
+        func_ref = f"{func.__module__}.{func.__name__}" if hasattr(func, "__module__") else str(func)
+        return {
+            "func_ref": func_ref,
+            "args": list(args),
+            "kwargs": kwargs,
+        }
+
+    def submit(
+        self,
+        func: Callable,
+        args: tuple,
+        kwargs: dict,
+        context: Optional[IntegrationContext] = None,
+        integration: Optional[str] = None,
+        pipeline: Optional[str] = None,
+        tags: Optional[Mapping[str, Any]] = None,
+    ) -> JobHandle:
+        """Submit a task via the Platform API → Cloud Tasks."""
+        target_url = f"{self.service_url}/handle_task"
+
+        payload = {
+            "queue": "default",
+            "target_url": target_url,
+            "task_name": f"{func.__module__}.{func.__name__}" if hasattr(func, "__module__") else str(func),
+            "payload": {
+                **self._serialize_args(func, args, kwargs),
+                "integration": integration or (context.integration if context else None),
+                "pipeline": pipeline or (context.integration_pipeline if context else None),
+                "run_id": context.run_id if context else str(uuid.uuid4()),
+                "tags": dict(tags or {}),
+            },
+        }
+
+        response = self._client.post("/v1/tasks/submit", json=payload)
+        response.raise_for_status()
+        data = response.json()
+
+        return ManagedJobHandle(
+            task_id=data.get("task_id", str(uuid.uuid4())),
+            tags=tags,
+        )
+
+    def schedule(
+        self,
+        func: Callable,
+        args: tuple,
+        kwargs: dict,
+        eta_or_delay: Union[int, float, Any],
+        context: Optional[IntegrationContext] = None,
+        integration: Optional[str] = None,
+        pipeline: Optional[str] = None,
+        tags: Optional[Mapping[str, Any]] = None,
+    ) -> JobHandle:
+        """Schedule a task for future execution via Cloud Tasks."""
+        import time
+
+        target_url = f"{self.service_url}/handle_task"
+
+        # Convert delay (ms) to absolute schedule_time
+        if isinstance(eta_or_delay, (int, float)):
+            schedule_time = time.time() + (eta_or_delay / 1000.0)
+        else:
+            schedule_time = None
+
+        payload = {
+            "queue": "default",
+            "target_url": target_url,
+            "task_name": f"{func.__module__}.{func.__name__}" if hasattr(func, "__module__") else str(func),
+            "payload": {
+                **self._serialize_args(func, args, kwargs),
+                "integration": integration or (context.integration if context else None),
+                "pipeline": pipeline or (context.integration_pipeline if context else None),
+                "run_id": context.run_id if context else str(uuid.uuid4()),
+                "tags": dict(tags or {}),
+            },
+            "schedule_time": schedule_time,
+        }
+
+        response = self._client.post("/v1/tasks/submit", json=payload)
+        response.raise_for_status()
+        data = response.json()
+
+        return ManagedJobHandle(
+            task_id=data.get("task_id", str(uuid.uuid4())),
+            tags=tags,
+        )
+
+    def register_schedule(
+        self,
+        func: Callable,
+        schedule: Schedule,
+        args: Optional[tuple] = None,
+        kwargs: Optional[dict] = None,
+        tags: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        """
+        Register a scheduled task with the Platform API.
+
+        The platform will create/update a Cloud Scheduler job
+        for this cron expression and store the task definition in Firestore.
+        """
+        # Derive task_id from function path
+        if hasattr(func, "func"):
+            # TaskWrapper
+            underlying = func.func
+            task_id = f"{underlying.__module__}.{underlying.__name__}"
+        elif hasattr(func, "fn"):
+            # Dramatiq actor
+            task_id = f"{func.fn.__module__}.{func.fn.__name__}"
+        else:
+            task_id = f"{func.__module__}.{func.__name__}"
+
+        task_name = getattr(func, "__name__", str(func))
+
+        task_dict = {
+            "task_id": task_id,
+            "task_name": task_name,
+            "target_url": f"{self.service_url}/handle_task",
+            "integration": (tags or {}).get("integration", "unknown"),
+            "pipeline": (tags or {}).get("pipeline", "unknown"),
+            "default_schedule": schedule.cron,
+        }
+        self._registered_tasks.append(task_dict)
+        logger.info(f"Registered schedule locally for {task_id}: {schedule.cron}")
+
+    def get_scheduled_jobs(self) -> List[JobHandle]:
+        """
+        Scheduled jobs are managed server-side.
+        Returns an empty list — scheduling state lives in Firestore.
+        """
+        return []
+
+    def on_worker_init(self) -> None:
+        """
+        Hook executed once during initialization.
+        With the pull model, schedules are fetched via worker HTTP endpoint.
+        We do nothing here.
+        """
+        pass
+
