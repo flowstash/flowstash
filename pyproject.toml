@@ -1,6 +1,6 @@
 [project]
 name = "flowstash-core"
-version = "0.3.0"
+version = "0.4.0"
 description = "A managed integration framework core."
 authors = [
     {name = "juraj.bezdek@gmail.com", email = "juraj.bezdek@gmail.com"}
@@ -38,6 +38,10 @@ dependencies = [
   "python-multipart (>=0.0.22,<0.0.23)",
   "cachetools (>=7.0.5,<8.0.0)",
 ]
+
+[project.urls]
+Homepage = "https://github.com/flowstash/flowstash"
+Repository = "https://github.com/flowstash/flowstash"
 
 [tool.uv]
 workspace = { members = ["packages/*"] }

@@ -1,11 +1,11 @@
 [project]
 name = "flowstash-lib"
-version = "0.3.0"
+version = "0.4.0"
 description = "Shared domain logic and utilities for the flowstash managed platform."
 authors = [{name = "juraj.bezdek@gmail.com", email = "juraj.bezdek@gmail.com"}]
 requires-python = ">=3.11"
 dependencies = [
-    "flowstash-clients>=0.3.0,<0.4.0",
+    "flowstash-clients>=0.4.0,<0.5.0",
     "httpx>=0.27.0",
     "pyyaml>=6.0.1",
     "pydantic>=2.10.0",
