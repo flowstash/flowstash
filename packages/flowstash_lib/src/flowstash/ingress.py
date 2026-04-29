@@ -53,7 +53,7 @@ class Ingress:
         return self._webhooks
 
 
-    def poll(self, pipeline: str, integration: str, schedule: Union[str, "Schedule"], name: Optional[str] = None):
+    def poll(self, pipeline: str, integration: str, schedule: Union[str, "Schedule"], name: Optional[str] = None, tags: Optional[Dict[str, Any]] = None):
         """
         Scheduler entrypoint for polling.
         Behaves as a specialized integration_task that manages state.
@@ -100,7 +100,8 @@ class Ingress:
                 "integration": integration,
                 "pipeline": pipeline,
                 "name": ingress_name,
-                "default_schedule": actual_schedule
+                "default_schedule": actual_schedule,
+                "tags": tags,
             })
 
             # Attach metadata for discovery
@@ -109,7 +110,8 @@ class Ingress:
                 "pipeline": pipeline,
                 "integration": integration,
                 "schedule": actual_schedule,
-                "name": ingress_name
+                "name": ingress_name,
+                "tags": tags,
             })
 
             return tw

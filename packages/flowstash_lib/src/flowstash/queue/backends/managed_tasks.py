@@ -234,12 +234,18 @@ class ManagedTasksBackend(TaskBackend):
 
         task_name = getattr(func, "__name__", str(func))
 
+        # Read integration/pipeline from TaskWrapper metadata when available.
+        # These are first-class fields on the wrapper, not tags.
+        meta = getattr(func, "metadata", {})
+        integration = meta.get("integration") or "unknown"
+        pipeline = meta.get("pipeline") or "unknown"
+
         task_dict = {
             "task_id": task_id,
             "task_name": task_name,
             "target_url": f"{self.service_url}/handle_task",
-            "integration": (tags or {}).get("integration", "unknown"),
-            "pipeline": (tags or {}).get("pipeline", "unknown"),
+            "integration": integration,
+            "pipeline": pipeline,
             "default_schedule": schedule.cron,
         }
         self._registered_tasks.append(task_dict)

@@ -1,4 +1,0 @@
-# Environment-specific overrides for backend
-backend:
-  # The type of backend can be 'dramatiq', 'asyncio', or 'managed'
-  type: managed | dramatiq | asyncio

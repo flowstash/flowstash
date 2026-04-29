@@ -13,13 +13,13 @@ config = load_config_dir("config", environment=env)
 
 # Initialize runtime with auto-import of the tasks directory
 runtime = initialize_runtime(
-    config, 
+    config,
     auto_import=[
         Path(__file__).parent / "src" / "shared" / "tasks",
-        Path(__file__).parent / "src" / "worker" / "tasks"
-    ]
+        Path(__file__).parent / "src" / "worker" / "tasks",
+    ],
 )
 if __name__ == "__main__":
     # If run directly, start the worker
-    print(f"Worker starting with backend: {config.worker.backend}")
+    print(f"Worker starting with backend: {config.backend}")
     asyncio.run(run_worker(config))
