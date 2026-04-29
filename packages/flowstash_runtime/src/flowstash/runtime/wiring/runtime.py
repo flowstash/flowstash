@@ -68,7 +68,10 @@ def _auto_import_path(path: Union[str, Path]) -> List[Any]:
 
 
 def _import_module_from_path(file_path: Path) -> Any:
-    """Import a module from a file path dynamically, supporting relative imports."""
+    """
+    Import a module from a file path dynamically, supporting relative imports.
+    Standardizes on 'src/' as the import root when present.
+    """
     import sys
     import importlib
 
@@ -76,32 +79,30 @@ def _import_module_from_path(file_path: Path) -> Any:
     base_path = None
     module_parts = []
 
-    # 1. Try to find the closest matching root in sys.path
-    longest_match = -1
-    matched_sp = None
+    # 1. Standardize on src/ as the import root (preferred strategy)
+    # Search upwards for a directory named "src"
+    current = file_path.parent if file_path.is_file() else file_path
+    src_ancestor = None
+    
+    # Check current and all parents
+    check_path = current
+    while check_path != check_path.parent:
+        if check_path.name == "src":
+            src_ancestor = check_path
+            break
+        check_path = check_path.parent
 
-    for sp in sys.path:
-        # sys.path can contain empty string for current directory
-        try:
-            sp_path = Path(sp).resolve() if sp else Path.cwd()
-            if file_path.is_relative_to(sp_path):
-                match_len = len(sp_path.parts)
-                if match_len > longest_match:
-                    longest_match = match_len
-                    matched_sp = sp_path
-        except ValueError:
-            pass
-
-    if matched_sp and matched_sp != file_path.parent:
-        base_path = matched_sp
-        rel_path = file_path.relative_to(base_path)
+    if src_ancestor:
+        base_path = src_ancestor
         if file_path.is_file():
+            rel = file_path.parent.relative_to(base_path)
             if file_path.name == "__init__.py":
-                module_parts = list(rel_path.parent.parts)
+                module_parts = list(rel.parts)
             else:
-                module_parts = list(rel_path.parent.parts) + [file_path.stem]
+                module_parts = list(rel.parts) + [file_path.stem]
         else:
-            module_parts = list(rel_path.parts)
+            rel = file_path.relative_to(base_path)
+            module_parts = list(rel.parts)
     else:
         # 2. Fallback: Trace upwards to find the root of the package (directory without __init__.py)
         current_dir = file_path.parent if file_path.is_file() else file_path
@@ -111,7 +112,6 @@ def _import_module_from_path(file_path: Path) -> Any:
 
         base_path = current_dir
 
-        # Calculate module path components relative to the found root
         if file_path.is_file():
             if file_path.name == "__init__.py":
                 rel_path = file_path.parent.relative_to(base_path)
@@ -120,7 +120,6 @@ def _import_module_from_path(file_path: Path) -> Any:
                 rel_path = file_path.parent.relative_to(base_path)
                 module_parts = list(rel_path.parts) + [file_path.stem]
         else:
-            # If a bare directory without __init__.py is passed, base_path == file_path
             if base_path == file_path:
                 base_path = file_path.parent
             rel_path = file_path.relative_to(base_path)
@@ -133,14 +132,8 @@ def _import_module_from_path(file_path: Path) -> Any:
     if base_path_str not in sys.path:
         sys.path.insert(0, base_path_str)
 
-    try:
-        return importlib.import_module(module_name)
-    except Exception as e:
-        import traceback
-
-        print(f"Error dynamically importing module {module_name} from {file_path}: {e}")
-        traceback.print_exc()
-        return None
+    # Fail fast: do not swallow exceptions during import (Fix B)
+    return importlib.import_module(module_name)
 
 
 def _build_redis_url(config: RuntimeConfig) -> str:
