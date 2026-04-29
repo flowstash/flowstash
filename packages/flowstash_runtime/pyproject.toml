@@ -1,12 +1,12 @@
 [project]
 name = "flowstash-runtime"
-version = "0.4.1"
+version = "0.4.2"
 description = "Actual runtime engine and bootstrap layer for the flowstash platform."
 authors = [{name = "juraj.bezdek@gmail.com", email = "juraj.bezdek@gmail.com"}]
 requires-python = ">=3.11"
 dependencies = [
-    "flowstash-clients>=0.4.1,<0.5.0",
-    "flowstash-lib>=0.4.1,<0.5.0",
+    "flowstash-clients>=0.4.2,<0.5.0",
+    "flowstash-lib>=0.4.2,<0.5.0",
     "fastapi>=0.110.0",
     "uvicorn>=0.29.0",
     "dramatiq>=1.16.0",
