@@ -83,7 +83,7 @@ def _import_module_from_path(file_path: Path) -> Any:
     # Search upwards for a directory named "src"
     current = file_path.parent if file_path.is_file() else file_path
     src_ancestor = None
-    
+
     # Check current and all parents
     check_path = current
     while check_path != check_path.parent:

@@ -129,6 +129,21 @@ def load_config_dir(config_dir: str | Path, environment: str) -> RuntimeConfig:
             f"Config directory {config_dir} does not exist or is not a directory"
         )
 
+    # Short-circuit for smoke-test environment: return a minimal, safe RuntimeConfig
+    # This allows importing application modules during CI/build checks without requiring
+    # real environment-specific configuration or secrets.
+    try:
+        env_up = str(environment).upper()
+    except Exception:
+        env_up = ""
+    if env_up == "SMOKE-TEST":
+        minimal_config = RuntimeConfig(
+            backend=BackendConfig(),
+            state_store=StateStoreConfig(),
+        )
+        init_registry(minimal_config)
+        return minimal_config
+
     shared_path = config_path / "shared"
     env_path = config_path / environment
 
