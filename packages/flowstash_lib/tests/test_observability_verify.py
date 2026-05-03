@@ -19,26 +19,29 @@ from flowstash.observability import registry
 from flowstash.observability.model import DataExchange, Correlation
 from flowstash.observability.stores.protocols import DataExchangeStore, BlobStore
 
+
 class MockDataExchangeStore(DataExchangeStore):
     def __init__(self):
         self.exchanges = []
-    
+
     def write_data_exchange(self, dx: DataExchange) -> None:
         self.exchanges.append(dx)
 
+
 class MockBlobStore(BlobStore):
     def __init__(self):
-        self.blobs = {} # path -> bytes
+        self.blobs = {}  # path -> bytes
 
     def put(self, *, path_hint: str, content_type: str, data: bytes):
         self.blobs[path_hint] = data
         return f"mock://{path_hint}", len(data), "hash"
 
+
 @pytest.mark.asyncio
 async def test_http_client_observability_flow():
     # Setup Observability
     set_observability_config(ObservabilityConfig(durability=DurabilityMode.IMMEDIATE))
-    
+
     # Setup Stores
     dx_store = MockDataExchangeStore()
     blob_store = MockBlobStore()
@@ -47,8 +50,7 @@ async def test_http_client_observability_flow():
 
     # Setup Client
     settings = ClientSettings(
-        client_id="test-integration",
-        baseUrl="https://api.example.com"
+        client_id="test-integration", baseUrl="https://api.example.com"
     )
     client = HttpClient(name="test-client", settings=settings)
 
@@ -59,7 +61,7 @@ async def test_http_client_observability_flow():
     mock_response.text = '{"success": true}'
     mock_response.aread = AsyncMock(return_value=b'{"success": true}')
     mock_response.is_error = False
-    
+
     client.client.request = AsyncMock(return_value=mock_response)
 
     # Execute
@@ -71,17 +73,11 @@ async def test_http_client_observability_flow():
 
     assert succeeded.state == "SUCCEEDED"
     assert succeeded.integration == "test-integration"
-    assert succeeded.operation == "POST test"
-    
-    # Verify Payloads are recorded in the single event
-    # Request
-    request_blob_key = [k for k in blob_store.blobs.keys() if "/request" in k]
-    assert len(request_blob_key) == 1
-    assert blob_store.blobs[request_blob_key[0]] == b'{"foo": "bar"}'
+    assert succeeded.operation == "POST /test"
 
-    # Response
-    response_blob_key = [k for k in blob_store.blobs.keys() if "/response" in k]
-    assert len(response_blob_key) == 1
-    assert blob_store.blobs[response_blob_key[0]] == b'{"success": true}'
+    # For a plain JSON POST (no files), offload_payloads=False so payloads are
+    # stored inline on the DataExchange object, not uploaded to the blob store.
+    assert succeeded.request_payload == b'{"foo": "bar"}'
+    assert succeeded.response_payload == b'{"success": true}'
 
     print("Observability verification pass!")

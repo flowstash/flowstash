@@ -50,13 +50,17 @@ def test_integration_task_submit():
     with integration_context(integration="outer", integration_pipeline="outer_pipe", tags={"global": "1"}):
         my_task.submit(1, 2)
     
-    # Check if backend.submit was called with the correct tags
-    # Metadata has its own tags, context has its own. 
-    # In submit(), we pass both to the backend which merges them.
     mock_backend.submit.assert_called_once()
     args, kwargs = mock_backend.submit.call_args
-    assert kwargs["tags"] == {"priority": "high", "fw.is_subtask": True}
+    # fw.is_subtask is no longer added; delegation metadata is passed separately
+    assert kwargs["tags"] == {"priority": "high"}
     assert kwargs["context"].tags == {"global": "1"}
+    # delegation carries the causal envelope
+    delegation = kwargs.get("delegation")
+    assert delegation is not None
+    assert delegation.target_task == "test_decorators.my_task"
+    assert delegation.parent_run_id is not None
+    assert delegation.operation_id is not None
 
 def test_integration_task_schedule():
     mock_backend = MagicMock()
@@ -70,7 +74,11 @@ def test_integration_task_schedule():
     mock_backend.schedule.assert_called_once()
     args, kwargs = mock_backend.schedule.call_args
     assert kwargs["eta_or_delay"] == 60
-    assert kwargs["tags"] == {"scheduled": "true", "fw.is_subtask": False}
+    # fw.is_subtask is no longer added; delegation carries causal metadata
+    assert kwargs["tags"] == {"scheduled": "true"}
+    delegation = kwargs.get("delegation")
+    assert delegation is not None
+    assert delegation.target_task == "test_decorators.my_task"
 
 def test_integration_task_default_schedule():
     mock_backend = MagicMock()
@@ -99,5 +107,6 @@ def test_integration_task_default_schedule():
     
     mock_backend.register_schedule.assert_called_once()
     args, kwargs = mock_backend.register_schedule.call_args
-    assert args[0] == my_scheduled_task.func
+    # register_schedule receives the TaskWrapper, not the raw function
+    assert args[0] is my_scheduled_task
     assert args[1].cron == "0 * * * *"

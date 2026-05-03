@@ -54,31 +54,39 @@ class AsyncioBackend:
         integration: Optional[str] = None,
         pipeline: Optional[str] = None,
         tags: Optional[Mapping[str, Any]] = None,
+        delegation: Optional[Any] = None,
     ) -> JobHandle:
         # context is captured at submit() time (from the calling frame's contextvars).
-        # asyncio.create_task() also copies the current contextvars snapshot, so the
-        # spawned task already inherits the parent's _current_ctx — no explicit run_id
-        # pass-through needed.
+        # Each submitted task is a new independent run — it must NOT inherit the parent
+        # run_id. We break the contextvar chain explicitly inside the spawned task by
+        # resetting _current_ctx to None before entering its own integration_context.
         ctx = context or current_context()
 
-        async def _run_with_context():
-            # integration_context auto-detects root vs nested via current_context():
-            # - parent present (inherited via create_task contextvars copy) → span
-            # - no parent → new run
-            with integration_context(
-                integration=integration or (ctx.integration if ctx else None),
-                integration_pipeline=pipeline
-                or (ctx.integration_pipeline if ctx else None),
-                run_id=ctx.run_id if ctx else None,
-                span_name=func.__name__,
-                tags={**(ctx.tags if ctx else {}), **(tags or {})},
-            ):
-                if asyncio.iscoroutinefunction(func):
-                    return await func(*args, **kwargs)
-                else:
-                    return func(*args, **kwargs)
+        parent_run_id = delegation.parent_run_id if delegation else (ctx.run_id if ctx else None)
+        operation_id = delegation.operation_id if delegation else None
 
-        task = asyncio.create_task(_run_with_context())
+        async def _run_with_new_run():
+            from ..context import _current_ctx as _ctx_var
+            # Break inherited contextvar so integration_context treats this as a root run.
+            token = _ctx_var.set(None)
+            try:
+                with integration_context(
+                    integration=integration or (ctx.integration if ctx else None),
+                    integration_pipeline=pipeline
+                    or (ctx.integration_pipeline if ctx else None),
+                    # No run_id: a fresh one is allocated by integration_context
+                    tags={**(ctx.tags if ctx else {}), **(tags or {})},
+                    parent_run_id=parent_run_id,
+                    operation_id=operation_id,
+                ):
+                    if asyncio.iscoroutinefunction(func):
+                        return await func(*args, **kwargs)
+                    else:
+                        return func(*args, **kwargs)
+            finally:
+                _ctx_var.reset(token)
+
+        task = asyncio.create_task(_run_with_new_run())
         self._submitted_tasks.append(task)
         return AsyncioJobHandle(task, tags or {})
 

@@ -581,31 +581,43 @@ async def record_data_exchange(
     # to avoid blocking strict timeouts if upload is slow.
 
     def _process_dx():
+        # --- Request payload ---
         req_ref = None
+        req_payload = None
         req_size = None
-        if event.offload_payloads and event.request_payload:
-            try:
-                req_ref, req_size, _ = get_blob_store().put(
-                    path_hint=f"{corr.run_id}/dx/{dx_id}/request",
-                    content_type=event.request_content_type
-                    or "application/octet-stream",
-                    data=event.request_payload,
-                )
-            except Exception as e:
-                logger.warning(f"Failed to upload request payload: {e}")
+        if event.request_payload:
+            if event.offload_payloads:
+                try:
+                    req_ref, req_size, _ = get_blob_store().put(
+                        path_hint=f"{corr.run_id}/dx/{dx_id}/request",
+                        content_type=event.request_content_type
+                        or "application/octet-stream",
+                        data=event.request_payload,
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to upload request payload: {e}")
+            else:
+                req_payload = event.request_payload
+                req_size = len(event.request_payload)
 
+        # --- Response payload ---
         res_ref = None
+        res_payload = None
         res_size = None
-        if event.offload_payloads and event.response_payload:
-            try:
-                res_ref, res_size, _ = get_blob_store().put(
-                    path_hint=f"{corr.run_id}/dx/{dx_id}/response",
-                    content_type=event.response_content_type
-                    or "application/octet-stream",
-                    data=event.response_payload,
-                )
-            except Exception as e:
-                logger.warning(f"Failed to upload response payload: {e}")
+        if event.response_payload:
+            if event.offload_payloads:
+                try:
+                    res_ref, res_size, _ = get_blob_store().put(
+                        path_hint=f"{corr.run_id}/dx/{dx_id}/response",
+                        content_type=event.response_content_type
+                        or "application/octet-stream",
+                        data=event.response_payload,
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to upload response payload: {e}")
+            else:
+                res_payload = event.response_payload
+                res_size = len(event.response_payload)
 
         dx = DataExchange(
             id=dx_id,
@@ -633,6 +645,8 @@ async def record_data_exchange(
             response_content_type=event.response_content_type,
             request_size_bytes=req_size or event.request_size_bytes,
             response_size_bytes=res_size or event.response_size_bytes,
+            request_payload=req_payload,
+            response_payload=res_payload,
             attrs=event.attrs,
         )
         get_data_exchange_store().write_data_exchange(dx)

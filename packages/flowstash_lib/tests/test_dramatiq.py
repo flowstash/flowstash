@@ -10,7 +10,8 @@ def test_dramatiq_backend_prepare_headers():
         headers = backend._prepare_headers(ctx, tags={"local": "v2"})
         assert headers["fw.integration"] == "test"
         assert headers["fw.pipeline"] == "pipe"
-        assert headers["fw.run_id"] == ctx.run_id
+        # fw.run_id is intentionally NOT forwarded: execution side allocates a fresh run_id
+        assert "fw.run_id" not in headers
         assert headers["fw.tags"] == {"global": "v1", "local": "v2"}
 
 @dramatiq.actor
@@ -19,13 +20,12 @@ def my_actor(*args, **kwargs):
 
 def test_dramatiq_backend_submit():
     backend = DramatiqBackend()
-    # Mocking actor.send_with_options would be better, but we can just check if it doesn't crash
-    # and returns a handle.
     
     with integration_context(integration="test", integration_pipeline="pipe"):
         handle = backend.submit(my_actor, (1, 2), {}, tags={"prio": "high"})
         assert handle.id is not None
-        assert handle.tags == {"prio": "high", "fw.is_subtask": False}
+        # fw.is_subtask removed; delegation carries causal metadata instead
+        assert handle.tags == {"prio": "high"}
 
 def test_scheduled_job_tracking():
     from flowstash.queue.backend import Schedule

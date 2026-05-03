@@ -9,6 +9,7 @@ import os
 import json
 import logging
 import uuid
+from dataclasses import asdict
 from typing import Any, Callable, Optional, Mapping, List, Union, Dict
 
 import httpx
@@ -122,11 +123,12 @@ class ManagedTasksBackend(TaskBackend):
         integration: Optional[str] = None,
         pipeline: Optional[str] = None,
         tags: Optional[Mapping[str, Any]] = None,
+        delegation: Optional[Any] = None,
     ) -> JobHandle:
         """Submit a task via the Platform API → Cloud Tasks."""
         target_url = f"{self.service_url}/handle_task"
 
-        payload = {
+        payload: Dict[str, Any] = {
             "target_url": target_url,
             "task_name": (
                 f"{func.__module__}.{func.__name__}"
@@ -141,8 +143,10 @@ class ManagedTasksBackend(TaskBackend):
                 or (context.integration if context else None),
                 "pipeline": pipeline
                 or (context.integration_pipeline if context else None),
-                "run_id": context.run_id if context else str(uuid.uuid4()),
+                # Do NOT pass trigger run_id as execution run_id.
+                # The execution side allocates a fresh run_id.
                 "tags": dict(tags or {}),
+                "delegation": asdict(delegation) if delegation else None,
             },
         }
 
@@ -165,6 +169,7 @@ class ManagedTasksBackend(TaskBackend):
         integration: Optional[str] = None,
         pipeline: Optional[str] = None,
         tags: Optional[Mapping[str, Any]] = None,
+        delegation: Optional[Any] = None,
     ) -> JobHandle:
         """Schedule a task for future execution via Cloud Tasks."""
         import time
@@ -177,7 +182,7 @@ class ManagedTasksBackend(TaskBackend):
         else:
             schedule_time = None
 
-        payload = {
+        payload: Dict[str, Any] = {
             "target_url": target_url,
             "task_name": (
                 f"{func.__module__}.{func.__name__}"
@@ -192,8 +197,9 @@ class ManagedTasksBackend(TaskBackend):
                 or (context.integration if context else None),
                 "pipeline": pipeline
                 or (context.integration_pipeline if context else None),
-                "run_id": context.run_id if context else str(uuid.uuid4()),
+                # Do NOT pass trigger run_id as execution run_id.
                 "tags": dict(tags or {}),
+                "delegation": asdict(delegation) if delegation else None,
             },
             "schedule_time": schedule_time,
         }

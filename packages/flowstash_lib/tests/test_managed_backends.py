@@ -4,6 +4,7 @@ Tests for ManagedTasksBackend and ManagedFeedBackend.
 Uses respx to mock httpx HTTP calls and verifies correct
 API payloads/endpoints are called.
 """
+
 import pytest
 import httpx
 import respx
@@ -15,7 +16,6 @@ from flowstash.context import IntegrationContext
 from flowstash.pipelines.backends.managed_feed import ManagedFeedBackend
 from flowstash.pipelines.records_model import RecordData
 
-
 # ─── Fixtures ────────────────────────────────────────────────────────
 
 
@@ -26,6 +26,8 @@ def backend():
         api_url="https://api.test.integrator.com",
         auth_token="test-jwt-token",
         service_url="https://tenant-abc.run.app",
+        project_id="test-project",
+        environment="test",
     )
 
 
@@ -128,14 +130,12 @@ def test_schedule_sends_with_schedule_time(backend):
 
     # Verify schedule_time is present in payload
     import json
+
     body = json.loads(route.calls[0].request.content)
     assert body.get("schedule_time") is not None
 
 
 # ─── ManagedTasksBackend.register_schedule ───────────────────────────
-
-
-
 
 
 # ─── ManagedTasksBackend.get_scheduled_jobs ──────────────────────────
@@ -165,7 +165,9 @@ async def test_job_handle_result_raises():
     with pytest.raises(NotImplementedError):
         await handle.result()
 
+
 # ─── ManagedFeedBackend ──────────────────────────────────────────────
+
 
 @pytest.fixture
 def feed_backend():
@@ -173,7 +175,10 @@ def feed_backend():
     return ManagedFeedBackend(
         api_url="https://api.test.integrator.com",
         auth_token="test-jwt-token",
+        project_id="test-project",
+        environment="test",
     )
+
 
 @respx.mock
 @pytest.mark.asyncio
@@ -195,8 +200,9 @@ async def test_feed_backend_publish(feed_backend):
     request = route.calls[0].request
     assert request.headers["Authorization"] == "Bearer test-jwt-token"
     assert request.headers["Content-Type"] == "application/json"
-    
+
     import json
+
     body = json.loads(request.content)
     assert body["data"] == {"name": "test"}
     assert "timestamp" in body

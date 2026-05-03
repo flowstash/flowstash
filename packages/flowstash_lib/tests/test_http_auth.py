@@ -12,15 +12,16 @@ from flowstash.clients.config import (
     RetryConfig,
 )
 
+
 @pytest.fixture
 def client_settings_factory():
     def _create(auth_config):
         return ClientSettings(
-            client_id="test_api",
-            base_url="https://api.example.com",
-            auth=auth_config
+            client_id="test_api", base_url="https://api.example.com", auth=auth_config
         )
+
     return _create
+
 
 @pytest.mark.asyncio
 async def test_api_key_header_auth(respx_mock, client_settings_factory):
@@ -28,23 +29,24 @@ async def test_api_key_header_auth(respx_mock, client_settings_factory):
         type=AuthType.API_KEY,
         key="X-API-Key",
         value="secret-key",
-        in_=ApiKeyLocation.HEADER
+        in_=ApiKeyLocation.HEADER,
     )
     settings = client_settings_factory(auth_config)
-    
+
     respx_mock.get("https://api.example.com/test").mock(
         return_value=httpx.Response(200)
     )
-    
+
     client = HttpClient(name="TEST", settings=settings)
-    
+
     # Needs to patch record_data_exchange as well since it is called in request
-    with patch('flowstash.clients.http.record_data_exchange', new_callable=AsyncMock):
+    with patch("flowstash.clients.http.record_data_exchange", new_callable=AsyncMock):
         await client.request("GET", "/test")
-    
+
     request = respx_mock.calls[0].request
     assert request.headers["X-API-Key"] == "secret-key"
     await client.close()
+
 
 @pytest.mark.asyncio
 async def test_api_key_query_auth(respx_mock, client_settings_factory):
@@ -52,23 +54,24 @@ async def test_api_key_query_auth(respx_mock, client_settings_factory):
         type=AuthType.API_KEY,
         key="api_key",
         value="secret-key",
-        in_=ApiKeyLocation.QUERY
+        in_=ApiKeyLocation.QUERY,
     )
     settings = client_settings_factory(auth_config)
-    
+
     respx_mock.get("https://api.example.com/test").mock(
         return_value=httpx.Response(200)
     )
-    
+
     client = HttpClient(name="TEST", settings=settings)
-    
-    with patch('flowstash.clients.http.record_data_exchange', new_callable=AsyncMock):
+
+    with patch("flowstash.clients.http.record_data_exchange", new_callable=AsyncMock):
         await client.request("GET", "/test")
-    
+
     request = respx_mock.calls[0].request
     url = request.url
     assert url.params["api_key"] == "secret-key"
     await client.close()
+
 
 @pytest.mark.asyncio
 async def test_oauth2_auth(respx_mock, client_settings_factory):
@@ -76,27 +79,29 @@ async def test_oauth2_auth(respx_mock, client_settings_factory):
         type=AuthType.OAUTH2,
         client_id="id",
         client_secret="secret",
-        token_url="https://auth.example.com/token"
+        token_url="https://auth.example.com/token",
     )
     settings = client_settings_factory(auth_config)
-    
+
     respx_mock.get("https://api.example.com/test").mock(
         return_value=httpx.Response(200)
     )
-    
+
     # Mock OAuth2Manager to avoid actual token request
     with patch("flowstash.clients.http.OAuth2Manager") as MockManager:
         mock_instance = MockManager.return_value
         mock_instance.get_token = AsyncMock(return_value="mock-token")
-        
+
         client = HttpClient(name="TEST", settings=settings)
-        
-        with patch('flowstash.clients.http.record_data_exchange', new_callable=AsyncMock):
+
+        with patch(
+            "flowstash.clients.http.record_data_exchange", new_callable=AsyncMock
+        ):
             await client.request("GET", "/test")
-        
+
         request = respx_mock.calls[0].request
         assert request.headers["Authorization"] == "Bearer mock-token"
-        
+
         await client.close()
 
 
@@ -105,32 +110,34 @@ class CustomHttpClient(HttpClient):
         await super().authorize(headers, params, cookies)
         cookies["session_id"] = "123456"
 
+
 @pytest.mark.asyncio
 async def test_custom_auth_adds_cookies(respx_mock, client_settings_factory):
     # Use empty settings but valid structure
     settings = client_settings_factory(None)
     # The factory expects auth_config, if None passed it might fail in factory creation
     # Let's check factory implementation
-    
+
     respx_mock.get("https://api.example.com/test").mock(
         return_value=httpx.Response(200)
     )
-    
+
     client = CustomHttpClient(name="TEST", settings=settings)
-    
-    with patch('flowstash.clients.http.record_data_exchange', new_callable=AsyncMock):
+
+    with patch("flowstash.clients.http.record_data_exchange", new_callable=AsyncMock):
         await client.request("GET", "/test")
-    
+
     request = respx_mock.calls[0].request
     # httpx handles cookie header formatting
     assert "session_id=123456" in request.headers["Cookie"]
-    
+
     await client.close()
 
 
 # ---------------------------------------------------------------------------
 # OAuth2Manager unit tests
 # ---------------------------------------------------------------------------
+
 
 def _make_oauth_config(**kwargs):
     defaults = dict(
@@ -235,7 +242,9 @@ async def test_oauth2_refresh_records_data_exchange_success():
     mock_client = AsyncMock()
     mock_client.post = AsyncMock(return_value=mock_resp)
 
-    with patch("flowstash.clients.http.record_data_exchange", new_callable=AsyncMock) as mock_dx:
+    with patch(
+        "flowstash.clients.http.record_data_exchange", new_callable=AsyncMock
+    ) as mock_dx:
         await mgr.refresh_token(mock_client)
 
     mock_dx.assert_called_once()
@@ -263,7 +272,9 @@ async def test_oauth2_refresh_records_data_exchange_http_error():
     mock_client = AsyncMock()
     mock_client.post = AsyncMock(return_value=mock_resp)
 
-    with patch("flowstash.clients.http.record_data_exchange", new_callable=AsyncMock) as mock_dx:
+    with patch(
+        "flowstash.clients.http.record_data_exchange", new_callable=AsyncMock
+    ) as mock_dx:
         with pytest.raises(httpx.HTTPStatusError):
             await mgr.refresh_token(mock_client)
 
@@ -294,7 +305,9 @@ async def test_oauth2_refresh_retries_on_connect_error():
         ]
     )
 
-    with patch("flowstash.clients.http.record_data_exchange", new_callable=AsyncMock) as mock_dx:
+    with patch(
+        "flowstash.clients.http.record_data_exchange", new_callable=AsyncMock
+    ) as mock_dx:
         with patch("asyncio.sleep", new_callable=AsyncMock):  # skip actual waits
             token = await mgr.refresh_token(mock_client)
 
@@ -315,11 +328,11 @@ async def test_oauth2_refresh_raises_after_max_retries():
     mgr = OAuth2Manager(config, integration_name="my-svc")
 
     mock_client = AsyncMock()
-    mock_client.post = AsyncMock(
-        side_effect=httpx.ConnectError("down")
-    )
+    mock_client.post = AsyncMock(side_effect=httpx.ConnectError("down"))
 
-    with patch("flowstash.clients.http.record_data_exchange", new_callable=AsyncMock) as mock_dx:
+    with patch(
+        "flowstash.clients.http.record_data_exchange", new_callable=AsyncMock
+    ) as mock_dx:
         with patch("asyncio.sleep", new_callable=AsyncMock):
             with pytest.raises(httpx.ConnectError):
                 await mgr.refresh_token(mock_client)
@@ -337,11 +350,11 @@ async def test_oauth2_refresh_timeout_records_timeout_state():
     mgr = OAuth2Manager(config, integration_name="my-svc")
 
     mock_client = AsyncMock()
-    mock_client.post = AsyncMock(
-        side_effect=httpx.TimeoutException("timed out")
-    )
+    mock_client.post = AsyncMock(side_effect=httpx.TimeoutException("timed out"))
 
-    with patch("flowstash.clients.http.record_data_exchange", new_callable=AsyncMock) as mock_dx:
+    with patch(
+        "flowstash.clients.http.record_data_exchange", new_callable=AsyncMock
+    ) as mock_dx:
         with patch("asyncio.sleep", new_callable=AsyncMock):
             with pytest.raises(httpx.TimeoutException):
                 await mgr.refresh_token(mock_client)
@@ -376,8 +389,10 @@ async def test_authorize_failure_logged(respx_mock, client_settings_factory):
     client = HttpClient(name="MY_CLIENT", settings=settings)
 
     with patch.object(
-        client._auth_manager, "get_token", new_callable=AsyncMock,
-        side_effect=httpx.ConnectError("token endpoint down")
+        client._auth_manager,
+        "get_token",
+        new_callable=AsyncMock,
+        side_effect=httpx.ConnectError("token endpoint down"),
     ):
         with patch("flowstash.clients.http.logger") as mock_logger:
             with pytest.raises(httpx.ConnectError):
@@ -389,7 +404,9 @@ async def test_authorize_failure_logged(respx_mock, client_settings_factory):
 
 
 @pytest.mark.asyncio
-async def test_api_key_query_secret_masked_in_observability(respx_mock, client_settings_factory):
+async def test_api_key_query_secret_masked_in_observability(
+    respx_mock, client_settings_factory
+):
     """API-key-in-query value must not appear in record_data_exchange address."""
     auth_config = ApiKeyAuthConfig(
         key="api_key",
@@ -403,7 +420,9 @@ async def test_api_key_query_secret_masked_in_observability(respx_mock, client_s
     )
 
     client = HttpClient(name="TEST", settings=settings)
-    with patch("flowstash.clients.http.record_data_exchange", new_callable=AsyncMock) as mock_dx:
+    with patch(
+        "flowstash.clients.http.record_data_exchange", new_callable=AsyncMock
+    ) as mock_dx:
         await client.request("GET", "/data")
 
     event = mock_dx.call_args[0][0]
@@ -414,6 +433,7 @@ async def test_api_key_query_secret_masked_in_observability(respx_mock, client_s
 # ---------------------------------------------------------------------------
 # _mask_oauth_payload unit test
 # ---------------------------------------------------------------------------
+
 
 def test_mask_oauth_payload_redacts_secrets():
     data = {
@@ -431,4 +451,3 @@ def test_mask_oauth_payload_redacts_secrets():
     assert "refresh-xyz" not in decoded
     assert "grant_type=password" in decoded
     assert "username=bob" in decoded
-

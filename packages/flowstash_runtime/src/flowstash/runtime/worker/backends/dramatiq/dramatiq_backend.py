@@ -15,8 +15,6 @@ from opentelemetry import trace, baggage
 from flowstash.observability.ingestion import (
     record_run_started,
     record_run_ended,
-    record_span_started,
-    record_span_ended,
 )
 
 
@@ -38,8 +36,10 @@ class AsyncRunner(threading.local):
         super().__init__()
         # Always create a fresh, dedicated loop for this thread.
         # Never reuse get_event_loop() – it may return the main thread's loop.
+        # Do NOT call asyncio.set_event_loop() here: that mutates the global
+        # event-loop policy for the calling thread (main thread at import time)
+        # and can clobber the loop managed by pytest-asyncio or uvicorn.
         loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
         self._loop = loop
         self.run, self.fire = self._build_strategy(loop)
 
@@ -56,14 +56,29 @@ class AsyncRunner(threading.local):
                 # run because this thread is the only loop driver.
                 pending = asyncio.all_tasks(loop)
                 if pending:
-                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                    loop.run_until_complete(
+                        asyncio.gather(*pending, return_exceptions=True)
+                    )
             except Exception:
                 pass
 
         return execute_run, execute_fire
 
 
-_async_runner = AsyncRunner()
+_thread_local_runner = threading.local()
+
+
+def _get_async_runner() -> AsyncRunner:
+    """Return this thread's dedicated AsyncRunner, creating it lazily on first access.
+
+    Using a lazy accessor (instead of a module-level ``AsyncRunner()``) prevents
+    ``AsyncRunner.__init__`` from running in the main thread at import time, which
+    previously called ``asyncio.new_event_loop()`` and polluted the global event-loop
+    state before any framework (uvicorn, pytest-asyncio) had a chance to set its own.
+    """
+    if not hasattr(_thread_local_runner, "runner"):
+        _thread_local_runner.runner = AsyncRunner()
+    return _thread_local_runner.runner
 
 
 def get_tracer():
@@ -117,10 +132,21 @@ class DramatiqBackend(TaskBackend):
         )
         queue = wrapper.metadata.get("queue") or "default"
 
+        # Idempotency: if a same-named actor was already registered with the broker
+        # (e.g., re-initialisation across test sessions), reuse it rather than
+        # raising ValueError from Dramatiq's duplicate-name check.
+        try:
+            broker = dramatiq.get_broker()
+            if name in broker.actors:
+                wrapper._backend_handler = broker.actors[name]
+                return
+        except Exception:
+            pass
+
         if inspect.iscoroutinefunction(original_func):
             # Convert to a sync function that runs via asyncio
             def sync_actor(*args, **kwargs):
-                return _async_runner.run(original_func(*args, **kwargs))
+                return _get_async_runner().run(original_func(*args, **kwargs))
 
             sync_actor.__name__ = original_func.__name__
             sync_actor.__module__ = original_func.__module__
@@ -137,12 +163,14 @@ class DramatiqBackend(TaskBackend):
         context: Optional[IntegrationContext],
         tags: Optional[Mapping[str, Any]],
         scheduled_job_id: Optional[str] = None,
+        delegation: Optional[Any] = None,
     ) -> Mapping[str, Any]:
-        headers = {}
+        headers: dict = {}
         if context:
             headers["fw.integration"] = context.integration
             headers["fw.pipeline"] = context.integration_pipeline
-            headers["fw.run_id"] = context.run_id
+            # Do NOT forward run_id as the execution run_id.
+            # The middleware allocates a fresh run_id on the execution side.
             if context.traceparent:
                 headers["traceparent"] = context.traceparent
             # Inherit and merge tags from context
@@ -157,6 +185,16 @@ class DramatiqBackend(TaskBackend):
         if scheduled_job_id:
             headers["fw.scheduled_job_id"] = scheduled_job_id
 
+        # Carry delegation causal metadata so the execution side can link back
+        if delegation is not None:
+            headers["fw.parent_run_id"] = delegation.parent_run_id
+            headers["fw.operation_id"] = delegation.operation_id
+            headers["fw.target_task"] = delegation.target_task
+            if delegation.accepted_id:
+                headers["fw.accepted_id"] = delegation.accepted_id
+            if delegation.schedule_time:
+                headers["fw.schedule_time"] = delegation.schedule_time.isoformat()
+
         return headers
 
     def submit(
@@ -168,20 +206,17 @@ class DramatiqBackend(TaskBackend):
         integration: Optional[str] = None,
         pipeline: Optional[str] = None,
         tags: Optional[Mapping[str, Any]] = None,
+        delegation: Optional[Any] = None,
     ) -> JobHandle:
         if not hasattr(func, "send"):
             raise ValueError(f"Function {func.__name__} is not a Dramatiq actor.")
 
-        headers = self._prepare_headers(context, tags)
+        headers = self._prepare_headers(context, tags, delegation=delegation)
         # Prioritize explicit integration/pipeline
         if integration:
             headers["fw.integration"] = integration
         if pipeline:
             headers["fw.pipeline"] = pipeline
-
-        # Ensure we have the subtask flag if not already there
-        if "fw.is_subtask" not in (tags or {}):
-            headers.setdefault("fw.tags", {})["fw.is_subtask"] = context is not None
 
         message = func.send_with_options(args=args, kwargs=kwargs, headers=headers)
         return DramatiqJobHandle(message, tags=headers.get("fw.tags"))
@@ -196,11 +231,12 @@ class DramatiqBackend(TaskBackend):
         integration: Optional[str] = None,
         pipeline: Optional[str] = None,
         tags: Optional[Mapping[str, Any]] = None,
+        delegation: Optional[Any] = None,
     ) -> JobHandle:
         if not hasattr(func, "send_with_options"):
             raise ValueError(f"Function {func.__name__} is not a Dramatiq actor.")
 
-        headers = self._prepare_headers(context, tags)
+        headers = self._prepare_headers(context, tags, delegation=delegation)
         # Prioritize explicit integration/pipeline
         if integration:
             headers["fw.integration"] = integration
@@ -315,19 +351,24 @@ class FrameworkContextMiddleware(dramatiq.Middleware):
 
         integration = headers.get("fw.integration")
         pipeline = headers.get("fw.pipeline")
-        run_id = headers.get("fw.run_id")
+        # fw.run_id in headers is the TRIGGER run_id, NOT the execution run_id.
+        # We deliberately ignore it here so the middleware allocates a fresh run_id.
         traceparent = headers.get("traceparent")
         tags = headers.get("fw.tags", {})
-        scheduled_job_id = headers.get("fw.scheduled_job_id")  # Extract dedicated field
+        scheduled_job_id = headers.get("fw.scheduled_job_id")
+        parent_run_id = headers.get("fw.parent_run_id")
+        operation_id = headers.get("fw.operation_id")
 
-        # Create/join integration context.
+        # Create a fresh execution context: new run_id allocated by integration_context.
         # record_lifecycle=False because this middleware records STARTED/ENDED explicitly
-        # below — prevents double-recording that would occur if integration_context auto-fired them.
+        # below — prevents double-recording.
         ctx_mgr = integration_context(
             integration=integration,
             integration_pipeline=pipeline,
-            run_id=run_id,
+            # No run_id: fresh one generated for this execution attempt
             tags=tags,
+            parent_run_id=parent_run_id,
+            operation_id=operation_id,
             record_lifecycle=False,
         )
         ctx = ctx_mgr.__enter__()
@@ -335,29 +376,20 @@ class FrameworkContextMiddleware(dramatiq.Middleware):
         self.local.ctx_mgr = ctx_mgr
         self.local.ctx = ctx
 
-        # Determine if this is a subtask
-        self.local.is_subtask = tags.get("fw.is_subtask", False)
-        self.local.scheduled_job_id = scheduled_job_id  # Store for use in run events
+        self.local.scheduled_job_id = scheduled_job_id
         self.local.span_name = f"task.execute:{message.actor_name}"
 
         # Sync observability recording (middleware is sync)
         def _fire(coro):
-            _async_runner.fire(coro)
+            _get_async_runner().fire(coro)
 
-        if not getattr(self.local, "is_subtask", False):
-            _fire(
-                record_run_started(
-                    correlation=self.local.ctx.corelation,
-                    scheduled_job_id=getattr(self.local, "scheduled_job_id", None),
-                )
+        # All Dramatiq messages represent new independent execution runs.
+        _fire(
+            record_run_started(
+                correlation=self.local.ctx.corelation,
+                scheduled_job_id=getattr(self.local, "scheduled_job_id", None),
             )
-        else:
-            _fire(
-                record_span_started(
-                    name=getattr(self.local, "span_name", "task"),
-                    correlation=self.local.ctx.corelation,
-                )
-            )
+        )
 
         # Start a span for the execution
         tracer = get_tracer()
@@ -376,7 +408,7 @@ class FrameworkContextMiddleware(dramatiq.Middleware):
 
     def after_process_message(self, broker, message, *, result=None, exception=None):
         def _fire(coro):
-            _async_runner.fire(coro)
+            _get_async_runner().fire(coro)
 
         if hasattr(self, "local"):
             if hasattr(self.local, "span_mgr"):
@@ -387,25 +419,14 @@ class FrameworkContextMiddleware(dramatiq.Middleware):
 
             if hasattr(self.local, "ctx"):
                 status = "SUCCEEDED" if not exception else "FAILED"
-                if not getattr(self.local, "is_subtask", False):
-                    _fire(
-                        record_run_ended(
-                            status=status,
-                            correlation=self.local.ctx.corelation,
-                            scheduled_job_id=getattr(
-                                self.local, "scheduled_job_id", None
-                            ),
-                        )
+                # All Dramatiq messages are independent execution runs.
+                _fire(
+                    record_run_ended(
+                        status=status,
+                        correlation=self.local.ctx.corelation,
+                        scheduled_job_id=getattr(self.local, "scheduled_job_id", None),
                     )
-                else:
-                    _fire(
-                        record_span_ended(
-                            name=getattr(self.local, "span_name", "task"),
-                            status="OK" if not exception else "ERROR",
-                            correlation=self.local.ctx.corelation,
-                            error_summary=str(exception) if exception else None,
-                        )
-                    )
+                )
 
             if hasattr(self.local, "ctx_mgr"):
                 self.local.ctx_mgr.__exit__(None, None, None)
@@ -414,7 +435,11 @@ class FrameworkContextMiddleware(dramatiq.Middleware):
         # before the worker picks up the next message.  Respects the config flag so
         # high-throughput, best-effort deployments can opt out.
         try:
-            from flowstash.observability.ingestion import _config as _obs_config, AsyncManager
+            from flowstash.observability.ingestion import (
+                _config as _obs_config,
+                AsyncManager,
+            )
+
             if getattr(_obs_config, "flush_on_task_exit", True):
                 AsyncManager.get_instance().flush(timeout=5.0)
         except Exception:

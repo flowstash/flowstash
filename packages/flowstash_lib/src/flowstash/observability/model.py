@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, UTC
 from typing import Optional, Literal, Union
 from enum import Enum
+import uuid
 
 
 @dataclass(frozen=True)
@@ -19,12 +20,43 @@ class Correlation:
     span_id: Optional[str] = None
     parent_span_id: Optional[str] = None
 
+    # Causal chain (optional)
+    # parent_run_id: the run that triggered this execution via submit/schedule
+    parent_run_id: Optional[str] = None
+    # operation_id: stable join key generated at delegation time, before execution run_id exists
+    operation_id: Optional[str] = None
+
     # Runtime semantics (optional)
     step_key: Optional[str] = None
     attempt: Optional[int] = None
 
     # lightweight tags (safe keys only)
     tags: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class TaskDelegationMetadata:
+    """Causal envelope carried in queue message headers from triggering run to executing run."""
+
+    parent_run_id: str
+    # ^ Run that created this delegation. Preserved on the child execution run.
+
+    operation_id: str
+    # ^ Stable UUID generated before the backend is called. Primary join key between
+    #   the delegation span (on the parent run) and the child execution run.
+
+    target_task: str
+    # ^ Auto-derived module.function_name of the delegated task. Carried for span display.
+
+    accepted_id: Optional[str] = None
+    # ^ Opaque handle returned by the backend after acceptance (e.g. Dramatiq message_id,
+    #   Cloud Tasks task_id). Set after the backend call. Secondary join key when present.
+
+    schedule_time: Optional[datetime] = None
+    # ^ Only set for .schedule() calls. The time the backend was asked to run the task.
+
+    attrs: dict = field(default_factory=dict)
+    # ^ Free-form backend-specific metadata (e.g. attrs["scheduled_job_id"] for cron identity).
 
 
 @dataclass(frozen=True)
@@ -87,6 +119,10 @@ class DataExchange:
     response_content_type: Optional[str] = None
     request_size_bytes: Optional[int] = None
     response_size_bytes: Optional[int] = None
+
+    # Inline payload bytes (present when server handles storage; mutually exclusive with *_ref)
+    request_payload: Optional[bytes] = None
+    response_payload: Optional[bytes] = None
 
     attrs: dict = None
 

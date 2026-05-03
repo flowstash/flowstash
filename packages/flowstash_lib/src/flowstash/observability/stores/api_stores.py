@@ -4,6 +4,7 @@ from typing import Tuple, Optional, Any
 from dataclasses import is_dataclass, asdict
 from datetime import datetime
 import json
+import base64
 import threading
 import queue
 import time
@@ -23,9 +24,13 @@ def _to_json_serializable(obj: Any) -> Any:
         for k, v in d.items():
             if isinstance(v, datetime):
                 d[k] = v.isoformat()
-            if is_dataclass(v):
+            elif isinstance(v, bytes):
+                d[k] = base64.b64encode(v).decode("ascii")
+            elif is_dataclass(v):
                 d[k] = _to_json_serializable(v)
         return d
+    if isinstance(obj, bytes):
+        return base64.b64encode(obj).decode("ascii")
     if isinstance(obj, dict):
         return {k: _to_json_serializable(v) for k, v in obj.items()}
     if isinstance(obj, list):

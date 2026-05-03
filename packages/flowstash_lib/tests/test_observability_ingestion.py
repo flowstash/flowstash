@@ -43,7 +43,9 @@ async def testrecord__started_immediate(mock_stores):
     events_store, _, _ = mock_stores
     set_observability_config(ObservabilityConfig(durability=DurabilityMode.IMMEDIATE))
 
-    with integration_context(integration="app", integration_pipeline="pipe", record_lifecycle=False) as ctx:
+    with integration_context(
+        integration="app", integration_pipeline="pipe", record_lifecycle=False
+    ) as ctx:
         await record_run_started(artifact_id="art1")
 
     events_store.write_run_event.assert_called_once()
@@ -75,6 +77,7 @@ async def test_record_data_exchange_with_payloads(mock_stores):
 
     blob_store.put.return_value = ("gs://ref", 10, "sha")
 
+    # 1. Test inline path (offload_payloads=False by default)
     with integration_context() as ctx:
         await record_data_exchange(
             DataExchangeEvent(
@@ -87,11 +90,39 @@ async def test_record_data_exchange_with_payloads(mock_stores):
             )
         )
 
+    assert blob_store.put.call_count == 0
+    dx_store.write_data_exchange.assert_called_once()
+    dx = dx_store.write_data_exchange.call_args[0][0]
+    assert dx.request_payload == b"req"
+    assert dx.response_payload == b"res"
+    assert dx.request_size_bytes == 3
+    assert dx.response_size_bytes == 3
+    assert dx.request_payload_ref is None
+    assert dx.response_payload_ref is None
+
+    dx_store.write_data_exchange.reset_mock()
+
+    # 2. Test offload path
+    with integration_context() as ctx:
+        await record_data_exchange(
+            DataExchangeEvent(
+                integration="sys",
+                operation="op",
+                channel="HTTP",
+                address="http://api",
+                request_payload=b"req",
+                response_payload=b"res",
+                offload_payloads=True,
+            )
+        )
+
     assert blob_store.put.call_count == 2
     dx_store.write_data_exchange.assert_called_once()
     dx = dx_store.write_data_exchange.call_args[0][0]
     assert dx.request_payload_ref == "gs://ref"
     assert dx.response_payload_ref == "gs://ref"
+    assert dx.request_payload is None
+    assert dx.response_payload is None
 
 
 @pytest.mark.asyncio

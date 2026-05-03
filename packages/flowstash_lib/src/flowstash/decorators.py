@@ -7,7 +7,11 @@ from typing import Any, Callable, Optional, TypeVar, Awaitable, Union, Protocol,
 from .context import integration_context, current_context, IntegrationContext
 from opentelemetry import trace
 from .queue.backend import Schedule, get_backend, register_task_schedule
-from .observability.ingestion import _enqueue_lifecycle, record_run_scheduled
+from .observability.ingestion import (
+    _enqueue_lifecycle,
+    record_span_started,
+    record_span_ended,
+)
 
 
 def get_tracer():
@@ -124,7 +128,11 @@ class TaskWrapper:
     async def run(self, *args, **kwargs) -> Any:
         """Execute immediately in-process."""
         tracer = get_tracer()
-        effective_span_name = self.metadata.get("span_name") or self.func.__name__
+        effective_span_name = (
+            self.metadata.get("span_name")
+            or self.metadata.get("name")
+            or self.func.__name__
+        )
         otel_span_name = effective_span_name
 
         with integration_context(
@@ -150,69 +158,142 @@ class TaskWrapper:
                 else:
                     return self.func(*args, **kwargs)
 
-    def submit(self, *args, **kwargs) -> JobHandle:
-        """Enqueue to technical backend."""
-        from .queue.backend import get_backend
+    def _emit_delegation_span_and_call_backend(
+        self,
+        ctx: IntegrationContext,
+        args: tuple,
+        kwargs: dict,
+        *,
+        eta_or_delay: Optional[Any] = None,
+        schedule_time: Optional[Any] = None,
+    ) -> "JobHandle":
+        """Record a DELEGATED span around the backend call and return the handle."""
+        from .observability.model import TaskDelegationMetadata
+        from datetime import datetime, UTC
 
         backend = get_backend()
+        target_task = f"{self.func.__module__}.{self.func.__name__}"
+        operation_id = str(uuid.uuid4())
+        span_name = f"delegate:{target_task}"
+        start_time = datetime.now(UTC)
 
+        delegation = TaskDelegationMetadata(
+            parent_run_id=ctx.run_id,
+            operation_id=operation_id,
+            target_task=target_task,
+            schedule_time=schedule_time,
+        )
+
+        span_attrs: dict = {
+            "fw.span_kind": "delegation",
+            "fw.operation_id": operation_id,
+            "fw.target_task": target_task,
+        }
+        if schedule_time is not None:
+            span_attrs["fw.schedule_time"] = schedule_time.isoformat()
+
+        _enqueue_lifecycle(
+            record_span_started,
+            name=span_name,
+            correlation=ctx.corelation,
+            attrs=span_attrs,
+        )
+
+        try:
+            if eta_or_delay is not None:
+                handle = backend.schedule(
+                    self._backend_handler or self.func,
+                    args,
+                    kwargs,
+                    eta_or_delay=eta_or_delay,
+                    context=ctx,
+                    integration=self.metadata["integration"],
+                    pipeline=self.metadata["pipeline"],
+                    tags=self.metadata.get("tags") or {},
+                    delegation=delegation,
+                )
+            else:
+                handle = backend.submit(
+                    self._backend_handler or self.func,
+                    args,
+                    kwargs,
+                    context=ctx,
+                    integration=self.metadata["integration"],
+                    pipeline=self.metadata["pipeline"],
+                    tags=self.metadata.get("tags") or {},
+                    delegation=delegation,
+                )
+        except Exception:
+            _enqueue_lifecycle(
+                record_span_ended,
+                name=span_name,
+                correlation=ctx.corelation,
+                status="ERROR",
+                start_time=start_time,
+                end_time=datetime.now(UTC),
+                attrs={**span_attrs, "fw.outcome": "ERROR"},
+            )
+            raise
+
+        _enqueue_lifecycle(
+            record_span_ended,
+            name=span_name,
+            correlation=ctx.corelation,
+            status="DELEGATED",
+            start_time=start_time,
+            end_time=datetime.now(UTC),
+            attrs={
+                **span_attrs,
+                "fw.outcome": "DELEGATED",
+                "fw.accepted_id": handle.id if handle else None,
+            },
+        )
+        return handle
+
+    def submit(self, *args, **kwargs) -> JobHandle:
+        """Enqueue to backend, recording a DELEGATED span in the current run."""
         ctx = current_context()
-        is_subtask = ctx is not None
-
-        if not ctx:
-            trace_id = secrets.token_hex(16)
-            span_id = secrets.token_hex(8)
-            ctx = IntegrationContext(
+        if ctx is None:
+            # No active run: open a short-lived root run scoped to this delegation call.
+            with integration_context(
                 integration=self.metadata["integration"],
                 integration_pipeline=self.metadata["pipeline"],
-                run_id=str(uuid.uuid4()),
-                traceparent=f"00-{trace_id}-{span_id}-01",
                 tags=self.metadata.get("tags") or {},
-            )
-        _enqueue_lifecycle(record_run_scheduled, correlation=ctx.corelation)
-
-        return backend.submit(
-            self._backend_handler or self.func,
-            args,
-            kwargs,
-            context=ctx,
-            integration=self.metadata["integration"],
-            pipeline=self.metadata["pipeline"],
-            tags={**(self.metadata.get("tags") or {}), "fw.is_subtask": is_subtask},
-        )
+            ):
+                return self._emit_delegation_span_and_call_backend(
+                    current_context(), args, kwargs
+                )
+        return self._emit_delegation_span_and_call_backend(ctx, args, kwargs)
 
     def schedule(
         self, eta_or_delay: Union[int, float, Any], *args, **kwargs
     ) -> JobHandle:
-        """Schedule for future execution."""
-        from .queue.backend import get_backend
+        """Schedule for future execution, recording a DELEGATED span in the current run."""
+        import time as _time
+        from datetime import datetime, UTC
 
-        backend = get_backend()
+        schedule_time: Optional[Any] = None
+        if isinstance(eta_or_delay, (int, float)):
+            schedule_time = datetime.fromtimestamp(
+                _time.time() + eta_or_delay / 1000.0, tz=UTC
+            )
 
         ctx = current_context()
-        is_subtask = ctx is not None
-
-        if not ctx:
-            trace_id = secrets.token_hex(16)
-            span_id = secrets.token_hex(8)
-            ctx = IntegrationContext(
+        if ctx is None:
+            with integration_context(
                 integration=self.metadata["integration"],
                 integration_pipeline=self.metadata["pipeline"],
-                run_id=str(uuid.uuid4()),
-                traceparent=f"00-{trace_id}-{span_id}-01",
                 tags=self.metadata.get("tags") or {},
-            )
-        _enqueue_lifecycle(record_run_scheduled, correlation=ctx.corelation, attrs={"delay": eta_or_delay})
-
-        return backend.schedule(
-            self._backend_handler or self.func,
-            args,
-            kwargs,
-            eta_or_delay=eta_or_delay,
-            context=ctx,
-            integration=self.metadata["integration"],
-            pipeline=self.metadata["pipeline"],
-            tags={**(self.metadata.get("tags") or {}), "fw.is_subtask": is_subtask},
+            ):
+                return self._emit_delegation_span_and_call_backend(
+                    current_context(),
+                    args,
+                    kwargs,
+                    eta_or_delay=eta_or_delay,
+                    schedule_time=schedule_time,
+                )
+        return self._emit_delegation_span_and_call_backend(
+            ctx, args, kwargs, eta_or_delay=eta_or_delay, schedule_time=schedule_time
         )
 
     def __call__(self, *args, **kwargs) -> JobHandle:

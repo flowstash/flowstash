@@ -1,6 +1,10 @@
-from typing import Any, Callable, Optional, Protocol, runtime_checkable, Mapping, List, Union
+from __future__ import annotations
+from typing import Any, Callable, Optional, Protocol, runtime_checkable, Mapping, List, Union, TYPE_CHECKING
 from pydantic import BaseModel
 from ..context import IntegrationContext
+
+if TYPE_CHECKING:
+    from ..observability.model import TaskDelegationMetadata
 
 @runtime_checkable
 class JobHandle(Protocol):
@@ -24,7 +28,8 @@ class TaskBackend(Protocol):
         context: Optional[IntegrationContext] = None,
         integration: Optional[str] = None,
         pipeline: Optional[str] = None,
-        tags: Optional[Mapping[str, Any]] = None
+        tags: Optional[Mapping[str, Any]] = None,
+        delegation: Optional[TaskDelegationMetadata] = None,
     ) -> JobHandle: ...
 
     def schedule(
@@ -36,7 +41,8 @@ class TaskBackend(Protocol):
         context: Optional[IntegrationContext] = None,
         integration: Optional[str] = None,
         pipeline: Optional[str] = None,
-        tags: Optional[Mapping[str, Any]] = None
+        tags: Optional[Mapping[str, Any]] = None,
+        delegation: Optional[TaskDelegationMetadata] = None,
     ) -> JobHandle: ...
 
     def register_schedule(

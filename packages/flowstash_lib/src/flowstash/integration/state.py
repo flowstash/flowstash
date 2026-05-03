@@ -9,6 +9,24 @@ from ..state.protocol import StateStoreProtocol, _decode_entry
 if TYPE_CHECKING:
     from ..state.entry import StateEntry
 
+# Module-level singleton for the fallback store (used when no RuntimeConfigRegistry is
+# configured, e.g. in unit tests and bare CLI invocations).  Using a single shared
+# in-memory instance means:
+#  1. State is consistent across all StateHandle instances within the same process.
+#  2. The store resets on every process restart, so stale test data never leaks
+#     between pytest sessions (unlike a file-backed ".flowstash_state.db").
+_fallback_store: Optional[StateStoreProtocol] = None
+
+
+def _get_fallback_store() -> StateStoreProtocol:
+    global _fallback_store
+    if _fallback_store is None:
+        from ..state.stores.sqlite_store import SQLiteStateStore
+
+        _fallback_store = SQLiteStateStore(db_path=":memory:")
+    return _fallback_store
+
+
 class State:
     """
     Facade for interacting with state stores.
@@ -32,34 +50,44 @@ class State:
         handle = _state_handle.get()
         if handle:
             return handle
-            
+
         # Fallback to general integration context and wrap it on the fly
         ctx = current_context()
         if not ctx:
             raise RuntimeError(
                 "State used outside of an integration run. Use `with State.use(ctx): ...`"
             )
-        
+
         # We don't cache it back into _state_handle here to avoid modifying
-        # the context indefinitely if it wasn't explicitly 'use'd, 
+        # the context indefinitely if it wasn't explicitly 'use'd,
         # but we could. Actually, for performance in loops, we should probably
         # ensure it's stable.
         return StateHandle(ctx)
 
     @staticmethod
-    def get_entry(key: str, scope: Literal["integration", "pipeline", "ingress"] = "integration") -> Optional[StateEntry]:
+    def get_entry(
+        key: str, scope: Literal["integration", "pipeline", "ingress"] = "integration"
+    ) -> Optional[StateEntry]:
         """Resolve context and call underlying get_entry."""
         return State.current().get_entry(key, scope=scope)
 
     @staticmethod
-    def get(key: str, scope: Literal["integration", "pipeline", "ingress"] = "integration") -> Any:
+    def get(
+        key: str, scope: Literal["integration", "pipeline", "ingress"] = "integration"
+    ) -> Any:
         """Resolve context, call underlying get_entry, and decode."""
         return State.current().get(key, scope=scope)
 
     @staticmethod
-    def set(key: str, value: Any, scope: Literal["integration", "pipeline", "ingress"] = "integration", ttl_s: Optional[int] = None) -> None:
+    def set(
+        key: str,
+        value: Any,
+        scope: Literal["integration", "pipeline", "ingress"] = "integration",
+        ttl_s: Optional[int] = None,
+    ) -> None:
         """Resolve context, encode, and call underlying set."""
         return State.current().set(key, value, scope=scope, ttl_s=ttl_s)
+
 
 class StateHandle:
     """A bound handle to the state store for a specific context."""
@@ -71,38 +99,45 @@ class StateHandle:
     def _get_store(self) -> StateStoreProtocol:
         if self._store:
             return self._store
-        
+
         # Resolve store based on global configuration if available
         from ..config.runtime_config import get_global_registry
+
         registry = get_global_registry()
         if registry is not None:
             self._store = registry._config.state_store.build_store()
             return self._store
 
-        # Fallback to SQLite (useful for tests/CLI without full config)
-        from ..state.stores.sqlite_store import SQLiteStateStore
-        db_path = ".flowstash_state.db"
-        # In tests we might still want memory, but for CLI/Local we want a file
-        self._store = SQLiteStateStore(db_path=db_path)
+        # Fallback: shared in-memory singleton (no file side-effects between runs)
+        self._store = _get_fallback_store()
         return self._store
 
     def _resolve_namespace(self, scope: str) -> str:
         if scope == "integration":
             if not self._ctx.integration or self._ctx.integration == "unknown":
-                 raise RuntimeError("Scope 'integration' requested but no integration name is present in context.")
+                raise RuntimeError(
+                    "Scope 'integration' requested but no integration name is present in context."
+                )
             return f"integration:{self._ctx.integration}"
-        
+
         elif scope == "pipeline":
-            if not self._ctx.integration_pipeline or self._ctx.integration_pipeline == "unknown":
-                 raise RuntimeError("Scope 'pipeline' requested but no pipeline is present in context.")
+            if (
+                not self._ctx.integration_pipeline
+                or self._ctx.integration_pipeline == "unknown"
+            ):
+                raise RuntimeError(
+                    "Scope 'pipeline' requested but no pipeline is present in context."
+                )
             return f"pipeline:{self._ctx.integration_pipeline}"
-        
+
         elif scope == "ingress":
             if not self._ctx.ingress_name:
-                 raise RuntimeError("Scope 'ingress' requested but not inside an ingress context (ingress_name missing).")
+                raise RuntimeError(
+                    "Scope 'ingress' requested but not inside an ingress context (ingress_name missing)."
+                )
             # We follow the convention: pipeline:{pipeline}:ingress:{ingress_name}
             return f"pipeline:{self._ctx.integration_pipeline}:ingress:{self._ctx.ingress_name}"
-        
+
         else:
             raise ValueError(f"Unknown scope: {scope}")
 
@@ -116,6 +151,12 @@ class StateHandle:
             return None
         return _decode_entry(entry)
 
-    def set(self, key: str, value: Any, scope: str = "integration", ttl_s: Optional[int] = None) -> None:
+    def set(
+        self,
+        key: str,
+        value: Any,
+        scope: str = "integration",
+        ttl_s: Optional[int] = None,
+    ) -> None:
         namespace = self._resolve_namespace(scope)
         self._get_store().set(namespace, key, value, ttl_s=ttl_s)

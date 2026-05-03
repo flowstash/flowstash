@@ -21,19 +21,14 @@ class IntegrationContext:
     current_record_key: Optional[str] = None
     ingress_name: Optional[str] = None
     parent_span_id: Optional[str] = None
+    # Causal chain fields — set when this context represents a delegated execution
+    parent_run_id: Optional[str] = None
+    operation_id: Optional[str] = None
 
     @property
     def corelation(self) -> Any:
         # Import inside to avoid circular dependencies
         from .observability.model import Correlation
-
-        trace_id = None
-        span_id = None
-        if self.traceparent:
-            parts = self.traceparent.split("-")
-            if len(parts) >= 3:
-                trace_id = parts[1]
-                span_id = parts[2]
 
         return Correlation(
             integration=self.integration,
@@ -42,6 +37,8 @@ class IntegrationContext:
             trace_id=self.trace_id,
             span_id=self.span_id,
             parent_span_id=self.parent_span_id,
+            parent_run_id=self.parent_run_id,
+            operation_id=self.operation_id,
             tags={k: str(v) for k, v in self.tags.items()},
         )
 
@@ -108,6 +105,8 @@ class integration_context:
         ingress_name: Optional[str] = None,
         span_name: Optional[str] = None,
         record_lifecycle: bool = True,
+        parent_run_id: Optional[str] = None,
+        operation_id: Optional[str] = None,
         **kwargs,
     ):
         self.span_name = span_name
@@ -118,6 +117,8 @@ class integration_context:
             "run_id": run_id,
             "tenant_id": tenant_id,
             "ingress_name": ingress_name,
+            "parent_run_id": parent_run_id,
+            "operation_id": operation_id,
             **kwargs,
         }
 
@@ -162,6 +163,9 @@ class integration_context:
                 "ingress_name": self.overrides.get("ingress_name")
                 or parent.ingress_name,
                 "parent_span_id": parent.span_id,
+                # Inherit causal metadata from parent run (same run, different span)
+                "parent_run_id": parent.parent_run_id,
+                "operation_id": parent.operation_id,
             }
 
         else:
@@ -181,6 +185,9 @@ class integration_context:
                 "tags": self.overrides.get("tags") or {},
                 "current_record_key": self.overrides.get("current_record_key"),
                 "ingress_name": self.overrides.get("ingress_name"),
+                # Causal metadata for delegated executions
+                "parent_run_id": self.overrides.get("parent_run_id"),
+                "operation_id": self.overrides.get("operation_id"),
             }
 
         ctx = IntegrationContext(**merged)

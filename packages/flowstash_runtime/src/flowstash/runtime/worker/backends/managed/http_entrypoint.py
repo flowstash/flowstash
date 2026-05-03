@@ -9,6 +9,7 @@ Feed endpoints:
   POST /internal/feed/kick/batched   — batched consumer drain (called by Cloud Tasks)
   POST /internal/feed/deliver/classic — single-record classic delivery (called by Cloud Tasks)
 """
+
 import importlib
 import inspect
 import logging
@@ -53,8 +54,20 @@ async def get_schedules():
 # ─── Request Model ───────────────────────────────────────────────────
 
 
+class DelegationMetadataModel(BaseModel):
+    """Causal envelope propagated from the triggering run to this execution."""
+
+    parent_run_id: Optional[str] = None
+    operation_id: Optional[str] = None
+    target_task: Optional[str] = None
+    accepted_id: Optional[str] = None
+    schedule_time: Optional[str] = None
+    attrs: Dict[str, Any] = {}
+
+
 class TaskPayload(BaseModel):
     """Payload pushed by Managed Scheduler or Platform API."""
+
     task_id: Optional[str] = None
     task_name: Optional[str] = None
     func_ref: Optional[str] = None  # e.g. "my_module.my_function"
@@ -64,8 +77,12 @@ class TaskPayload(BaseModel):
     pipeline: Optional[str] = None
     triggered_by: Optional[str] = None
     cron: Optional[str] = None
+    # run_id is kept for backward compatibility with older payloads that carry it,
+    # but it is NOT used as the execution run_id.  The execution side always allocates
+    # a fresh run_id.  Causal metadata is carried in the `delegation` field instead.
     run_id: Optional[str] = None
     tags: Optional[Dict[str, Any]] = None
+    delegation: Optional[DelegationMetadataModel] = None
 
 
 # ─── Function Registry ───────────────────────────────────────────────
@@ -122,7 +139,7 @@ async def handle_task(payload: TaskPayload):
     Receive and execute a task triggered in managed mode.
     """
     func_ref = payload.func_ref or payload.task_id or payload.task_name
-    
+
     if not func_ref:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -141,7 +158,13 @@ async def handle_task(payload: TaskPayload):
     # Context Data
     integration = payload.integration or "unknown"
     pipeline = payload.pipeline or "unknown"
-    run_id = payload.run_id
+    # Do NOT use payload.run_id as the execution run_id.  Always allocate a fresh one.
+    # Causal linkage is carried via delegation metadata.
+    parent_run_id: Optional[str] = None
+    operation_id: Optional[str] = None
+    if payload.delegation:
+        parent_run_id = payload.delegation.parent_run_id
+        operation_id = payload.delegation.operation_id
     tags = payload.tags or {}
 
     # Add trigger metadata
@@ -156,10 +179,12 @@ async def handle_task(payload: TaskPayload):
     # record_lifecycle=False: we fire STARTED/ENDED explicitly below so that we can
     # control status precisely (especially returning 200 on failure without letting
     # the context manager auto-record SUCCEEDED on exception-caught-internally paths).
+    # No run_id override: integration_context allocates a fresh run_id for each attempt.
     with integration_context(
         integration=integration,
         integration_pipeline=pipeline,
-        run_id=run_id,
+        parent_run_id=parent_run_id,
+        operation_id=operation_id,
         tags=tags,
         record_lifecycle=False,
     ) as ctx:
@@ -246,9 +271,8 @@ async def _resolve_record_from_item(item: dict) -> Optional[Any]:
             import json as _json
             import asyncio
             from flowstash.observability.registry import get_blob_store
-            blob_bytes = await asyncio.to_thread(
-                get_blob_store().get, blob_ref
-            )
+
+            blob_bytes = await asyncio.to_thread(get_blob_store().get, blob_ref)
             data = _json.loads(blob_bytes)
         except Exception as e:
             logger.error(
@@ -318,6 +342,7 @@ async def kick_batched(request: KickBatchedRequest):
 
             # 2. Find the matching consumer handler
             from flowstash.pipelines.consumer import get_registered_consumers
+
             consumers = get_registered_consumers()
             spec = next(
                 (c for c in consumers if c.subscription_name == request.group_name),
@@ -333,10 +358,13 @@ async def kick_batched(request: KickBatchedRequest):
                     f"kick_batched: no handler registered for group={request.group_name}"
                 )
                 failed_keys = [it["dedupe_key"] for it in items]
-                failure_reason = f"No handler registered for group '{request.group_name}'"
+                failure_reason = (
+                    f"No handler registered for group '{request.group_name}'"
+                )
             else:
                 # 3. Resolve records (including any blob_ref fetches — F5)
                 import asyncio
+
                 records_or_none = await asyncio.gather(
                     *[_resolve_record_from_item(it) for it in items]
                 )
@@ -352,7 +380,10 @@ async def kick_batched(request: KickBatchedRequest):
 
                 if records:
                     try:
-                        # Deliver to handler
+                        # Deliver to handler.
+                        # The integration_context wraps both handler execution AND the
+                        # subsequent /ack call so the run ends only after the lease is
+                        # durably committed. run_id comes from the managed API lease.
                         with integration_context(
                             tenant_id=request.tenant_id,
                             integration=request.feed_id,
@@ -364,16 +395,46 @@ async def kick_batched(request: KickBatchedRequest):
                             else:
                                 for r in records:
                                     await spec.handler(r)
-                        success_keys = [r.dedupe_key for r in records if r.dedupe_key]
+
+                            # 4. ACK results — inside the run context so the run ends
+                            #    only after the lease is durably committed.
+                            success_keys = [r.dedupe_key for r in records if r.dedupe_key]
+                            ack_resp = await client.post(
+                                f"/v1/feed/{request.feed_id}/ack",
+                                json={
+                                    "group_name": request.group_name,
+                                    "run_id": run_id,
+                                    "success_keys": success_keys,
+                                    "failed_keys": failed_keys,
+                                    "failure_reason": failure_reason,
+                                },
+                            )
+                            ack_resp.raise_for_status()
+
                     except Exception as e:
                         logger.error(
                             f"Consumer handler failed for group={request.group_name}: {e}",
                             exc_info=True,
                         )
-                        failed_keys.extend([r.dedupe_key for r in records if r.dedupe_key])
+                        failed_keys.extend(
+                            [r.dedupe_key for r in records if r.dedupe_key]
+                        )
                         failure_reason = str(e)
+                        # ACK with failures so the lease is released even on handler error.
+                        ack_resp = await client.post(
+                            f"/v1/feed/{request.feed_id}/ack",
+                            json={
+                                "group_name": request.group_name,
+                                "run_id": run_id,
+                                "success_keys": [],
+                                "failed_keys": failed_keys,
+                                "failure_reason": failure_reason,
+                            },
+                        )
+                        ack_resp.raise_for_status()
+                    return {"status": "ok", "message": f"processed {len(records)} records"}
 
-            # 4. ACK results — must reach this point; return 500 if we can't
+            # Handler was missing or all items unresolvable — ACK failures without a run context.
             ack_resp = await client.post(
                 f"/v1/feed/{request.feed_id}/ack",
                 json={
@@ -405,6 +466,7 @@ class DeliverClassicRequest(BaseModel):
     Pushed by Cloud Tasks when a classic (single-record, non-batched) consumer
     is registered. Contains one complete record.
     """
+
     tenant_id: str
     feed_id: str
     group_name: str
