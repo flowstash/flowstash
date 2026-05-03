@@ -5,6 +5,7 @@ from flowstash.decorators import integration_step, integration_task
 from flowstash.context import current_context, integration_context
 from flowstash.queue.backend import set_backend, Schedule
 
+
 @pytest.mark.asyncio
 async def test_integration_step_async():
     @integration_step(integration="test", integration_pipeline="pipe", tags={"t": "v"})
@@ -17,6 +18,7 @@ async def test_integration_step_async():
     result = await my_step()
     assert result == "ok"
 
+
 def test_integration_step_sync():
     @integration_step(integration="test", integration_pipeline="pipe", tags={"s": "w"})
     def my_step():
@@ -28,9 +30,12 @@ def test_integration_step_sync():
     result = my_step()
     assert result == "ok"
 
+
 @pytest.mark.asyncio
 async def test_integration_task_run():
-    @integration_task(integration="test", integration_pipeline="pipe", tags={"task": "true"})
+    @integration_task(
+        integration="test", integration_pipeline="pipe", tags={"task": "true"}
+    )
     async def my_task():
         ctx = current_context()
         assert ctx.tags == {"task": "true"}
@@ -39,17 +44,22 @@ async def test_integration_task_run():
     result = await my_task.run()
     assert result == 42
 
+
 def test_integration_task_submit():
     mock_backend = MagicMock()
     set_backend(mock_backend)
 
-    @integration_task(integration="test", integration_pipeline="pipe", tags={"priority": "high"})
+    @integration_task(
+        integration="test", integration_pipeline="pipe", tags={"priority": "high"}
+    )
     def my_task(x, y):
         return x + y
 
-    with integration_context(integration="outer", integration_pipeline="outer_pipe", tags={"global": "1"}):
+    with integration_context(
+        integration="outer", integration_pipeline="outer_pipe", tags={"global": "1"}
+    ):
         my_task.submit(1, 2)
-    
+
     mock_backend.submit.assert_called_once()
     args, kwargs = mock_backend.submit.call_args
     # fw.is_subtask is no longer added; delegation metadata is passed separately
@@ -62,11 +72,14 @@ def test_integration_task_submit():
     assert delegation.parent_run_id is not None
     assert delegation.operation_id is not None
 
+
 def test_integration_task_schedule():
     mock_backend = MagicMock()
     set_backend(mock_backend)
 
-    @integration_task(integration="test", integration_pipeline="pipe", tags={"scheduled": "true"})
+    @integration_task(
+        integration="test", integration_pipeline="pipe", tags={"scheduled": "true"}
+    )
     def my_task():
         pass
 
@@ -80,31 +93,34 @@ def test_integration_task_schedule():
     assert delegation is not None
     assert delegation.target_task == "test_decorators.my_task"
 
+
 def test_integration_task_default_schedule():
     mock_backend = MagicMock()
-    
+
     # Reset pending schedules for a clean test
     from flowstash.queue.backend import _pending_schedules
+
     _pending_schedules.clear()
     # Also reset the global backend
     import flowstash.queue.backend as backend_module
+
     backend_module._backend = None
-    
+
     # Define task with schedule BEFORE setting backend (tests deferred registration)
     @integration_task(
-        integration="test", 
-        integration_pipeline="pipe", 
-        default_schedule=Schedule(cron="0 * * * *")
+        integration="test",
+        integration_pipeline="pipe",
+        default_schedule=Schedule(cron="0 * * * *"),
     )
     def my_scheduled_task():
         pass
-    
+
     # 1. Backend shouldn't have been called yet
     mock_backend.register_schedule.assert_not_called()
-    
+
     # 2. Set backend, should trigger deferred registration
     set_backend(mock_backend)
-    
+
     mock_backend.register_schedule.assert_called_once()
     args, kwargs = mock_backend.register_schedule.call_args
     # register_schedule receives the TaskWrapper, not the raw function

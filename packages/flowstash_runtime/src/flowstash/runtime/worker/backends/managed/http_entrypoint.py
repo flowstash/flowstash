@@ -398,7 +398,9 @@ async def kick_batched(request: KickBatchedRequest):
 
                             # 4. ACK results — inside the run context so the run ends
                             #    only after the lease is durably committed.
-                            success_keys = [r.dedupe_key for r in records if r.dedupe_key]
+                            success_keys = [
+                                r.dedupe_key for r in records if r.dedupe_key
+                            ]
                             ack_resp = await client.post(
                                 f"/v1/feed/{request.feed_id}/ack",
                                 json={
@@ -432,7 +434,10 @@ async def kick_batched(request: KickBatchedRequest):
                             },
                         )
                         ack_resp.raise_for_status()
-                    return {"status": "ok", "message": f"processed {len(records)} records"}
+                    return {
+                        "status": "ok",
+                        "message": f"processed {len(records)} records",
+                    }
 
             # Handler was missing or all items unresolvable — ACK failures without a run context.
             ack_resp = await client.post(

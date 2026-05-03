@@ -68,11 +68,7 @@ class ManagedTasksBackend(TaskBackend):
         self.api_url = api_url.rstrip("/")
         self.auth_token = auth_token
 
-        self.service_url = (
-            service_url
-            or os.environ.get("SERVICE_URL")
-            or "SERVICE_URL" 
-        )
+        self.service_url = service_url or os.environ.get("SERVICE_URL") or "SERVICE_URL"
         self.project_id = (
             project_id
             or os.environ.get("MANAGED_PROJECT_ID")
@@ -85,7 +81,7 @@ class ManagedTasksBackend(TaskBackend):
             raise ValueError(
                 "project_id is not set. Provide it as an argument or set MANAGED_PROJECT_ID env var."
             )
-      
+
         if not self.environment:
             raise ValueError(
                 "environment is not set. Provide it as an argument or set ENVIRONMENT env var."

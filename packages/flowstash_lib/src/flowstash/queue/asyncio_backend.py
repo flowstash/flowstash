@@ -62,11 +62,14 @@ class AsyncioBackend:
         # resetting _current_ctx to None before entering its own integration_context.
         ctx = context or current_context()
 
-        parent_run_id = delegation.parent_run_id if delegation else (ctx.run_id if ctx else None)
+        parent_run_id = (
+            delegation.parent_run_id if delegation else (ctx.run_id if ctx else None)
+        )
         operation_id = delegation.operation_id if delegation else None
 
         async def _run_with_new_run():
             from ..context import _current_ctx as _ctx_var
+
             # Break inherited contextvar so integration_context treats this as a root run.
             token = _ctx_var.set(None)
             try:
