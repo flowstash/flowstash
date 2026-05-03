@@ -88,7 +88,7 @@ def _make_async_lifespan(rt: Runtime):
         if startup_task_name:
             _run_startup_task(startup_task_name)
 
-        logger.info("Observability lifespan: startup complete")
+        logger.info("lifespan: startup complete")
         yield  # app serves requests here
 
         # --- Shutdown ---
@@ -105,7 +105,7 @@ def _make_async_lifespan(rt: Runtime):
 
             AsyncManager.get_instance().flush(timeout=10.0)
             flush_stores(timeout=10.0)
-            logger.info("Observability lifespan: shutdown flush complete")
+            logger.info("lifespan: shutdown flush complete")
         except Exception:
             pass
 

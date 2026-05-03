@@ -198,6 +198,7 @@ def run(
     logs: bool = typer.Option(
         False, "--logs", help="Follow logs (useful with --detach)"
     ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompts"),
 ):
     """
     [bold magenta]Run[/bold magenta] the project locally using Docker Compose.
@@ -219,7 +220,7 @@ def run(
         env_mode = next((e for e in project_config.environments if e.name == env), None)
         if not env_mode:
             if env == "dev":
-                if Confirm.ask(
+                if yes or Confirm.ask(
                     f"Environment '{env}' not found. Would you like to set it up now?"
                 ):
                     project_cmds.add_environment(project_config, env_name=env)
@@ -240,6 +241,7 @@ def build(
     ctx: typer.Context,
     env: str = typer.Argument("dev", help="Environment to build (default: local)"),
     tag: str = typer.Option("latest", "--tag", "-t", help="Tag for the image"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompts"),
 ):
     """
     [bold yellow]Build[/bold yellow] project artifacts/images.
@@ -261,7 +263,7 @@ def build(
         env_mode = next((e for e in project_config.environments if e.name == env), None)
         if not env_mode:
             if env == "dev":
-                if Confirm.ask(
+                if yes or Confirm.ask(
                     f"Environment '{env}' not found. Would you like to set it up now?"
                 ):
                     project_cmds.add_environment(project_config, env_name=env)
@@ -284,9 +286,7 @@ def deploy(
     artifact: Optional[str] = typer.Option(
         None, "--artifact", "-a", help="Artifact ID to deploy"
     ),
-    non_interactive: bool = typer.Option(
-        False, "--non-interactive", help="Do not ask for confirmation"
-    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompts"),
 ):
     """
     [bold cyan]Deploy[/bold cyan] your project to the flowstash Managed Platform.
@@ -316,7 +316,7 @@ def deploy(
 
     if not env_mode:
         if env == "prod":
-            if not non_interactive and Confirm.ask(
+            if yes or Confirm.ask(
                 f"Environment '{env}' not found. Would you like to set it up now?"
             ):
                 # We need to pass the actual project_config object to add_environment
@@ -347,7 +347,7 @@ def deploy(
             )
             raise typer.Exit(code=1)
 
-    deploy_cmds.deploy(env=env, artifact=artifact, non_interactive=non_interactive)
+    deploy_cmds.deploy(env=env, artifact=artifact, yes=yes)
 
 
 @app.command()

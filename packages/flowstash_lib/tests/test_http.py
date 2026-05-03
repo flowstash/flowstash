@@ -43,7 +43,7 @@ async def test_http_client_records_data_exchange(respx_mock, client_settings, mo
     
     assert event.integration == "test_integration"
     assert event.channel == "HTTP"
-    assert event.operation == "GET test"
+    assert event.operation == "GET /test"
     assert event.state == "SUCCEEDED"
     assert event.http_method == "GET"
     assert event.status_code == 200
@@ -83,3 +83,42 @@ async def test_http_client_no_otel_imports():
     assert not hasattr(http_module, 'trace')
     assert not hasattr(http_module, 'get_tracer')
     assert not hasattr(http_module, 'inject')
+
+
+def test_mask_sensitive_url_strips_api_key(client_settings):
+    """_mask_sensitive_url replaces sensitive query-param values with ***."""
+    client = HttpClient(name="TEST", settings=client_settings)
+
+    url = "https://api.example.com/data?api_key=MY_SECRET&page=2"
+    masked = client._mask_sensitive_url(url)
+
+    assert "MY_SECRET" not in masked
+    assert "api_key=***" in masked
+    assert "page=2" in masked
+
+
+def test_mask_sensitive_url_no_sensitive_params(client_settings):
+    """_mask_sensitive_url leaves non-sensitive params unchanged."""
+    client = HttpClient(name="TEST", settings=client_settings)
+
+    url = "https://api.example.com/data?page=2&size=50"
+    assert client._mask_sensitive_url(url) == url
+
+
+def test_mask_sensitive_url_no_query(client_settings):
+    """_mask_sensitive_url is a no-op when there are no query params."""
+    client = HttpClient(name="TEST", settings=client_settings)
+
+    url = "https://api.example.com/data"
+    assert client._mask_sensitive_url(url) == url
+
+
+def test_mask_sensitive_url_token_param(client_settings):
+    """Values of params containing 'token' are masked."""
+    client = HttpClient(name="TEST", settings=client_settings)
+
+    url = "https://api.example.com/data?access_token=supersecret123&foo=bar"
+    masked = client._mask_sensitive_url(url)
+
+    assert "supersecret123" not in masked
+    assert "foo=bar" in masked

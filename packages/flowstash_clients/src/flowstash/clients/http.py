@@ -1,3 +1,5 @@
+from .base import BaseClient
+from .registry import get_client
 import httpx
 import logging
 import asyncio
@@ -5,8 +7,9 @@ import datetime
 import fnmatch
 import re
 from pathlib import Path
-from datetime import UTC
+from datetime import UTC, timedelta, datetime
 from typing import Any, Optional, Dict, List, Union
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 import weakref
 
 from .config import (
@@ -28,6 +31,43 @@ from flowstash.observability.ingestion import record_data_exchange
 
 logger = logging.getLogger(__name__)
 
+# Max retries for transient failures on the OAuth2 token endpoint
+MAX_TOKEN_RETRIES = 3
+
+# Query-param key substrings considered sensitive — values are masked in URLs
+_SENSITIVE_PARAM_KEYS = frozenset(
+    [
+        "api_key",
+        "apikey",
+        "key",
+        "token",
+        "secret",
+        "password",
+        "access_token",
+        "client_secret",
+    ]
+)
+
+
+def _mask_oauth_payload(data: Dict[str, Any]) -> bytes:
+    """Return URL-encoded bytes of *data* with credential values redacted."""
+    import shlex
+
+    def _mask(val: str) -> str:
+        if not val or len(val) <= 4:
+            return "***"
+        return f"***{val[-4:]}"
+
+    masked = {}
+    for k, v in data.items():
+        if any(
+            s in k.lower() for s in ("secret", "password", "refresh_token", "token")
+        ):
+            masked[k] = _mask(str(v))
+        else:
+            masked[k] = v
+    return urlencode(masked).encode("utf-8")
+
 
 class SuppressedEndpointError(httpx.HTTPError):
     """Raised when a request is suppressed by traffic governance rules."""
@@ -38,17 +78,32 @@ class SuppressedEndpointError(httpx.HTTPError):
 
 class OAuth2Manager:
     """
-    Primitive OAuth2 manager for token handling and re-auth.
+    OAuth2 manager for token handling, expiry tracking, and re-auth.
+    Token endpoint calls are retried on transient network errors and
+    recorded via record_data_exchange (with credentials masked).
     """
 
-    def __init__(self, config: OAuth2AuthConfig):
+    def __init__(self, config: OAuth2AuthConfig, integration_name: str = ""):
         self.config = config
-        self._access_token = None
+        self.integration_name = integration_name or config.client_id
+        self._access_token: Optional[str] = None
+        self._token_expires_at: Optional[datetime] = None
+        self._expiry_buffer_seconds: int = 30
         self._lock = asyncio.Lock()
+
+    def _is_token_valid(self) -> bool:
+        if not self._access_token:
+            return False
+        if self._token_expires_at is None:
+            # No expiry info from server — assume valid until a 401 tells us otherwise
+            return True
+        return datetime.now(UTC) < (
+            self._token_expires_at - timedelta(seconds=self._expiry_buffer_seconds)
+        )
 
     async def get_token(self, client: httpx.AsyncClient) -> str:
         async with self._lock:
-            if self._access_token:
+            if self._is_token_valid():
                 return self._access_token
             return await self.refresh_token(client)
 
@@ -57,7 +112,7 @@ class OAuth2Manager:
             f"Refreshing OAuth2 token for {self.config.client_id} via {self.config.token_url}"
         )
 
-        # Determine grant_type
+        # Build request data
         grant_type = self.config.grant_type
         if self.config.refresh_token:
             grant_type = "refresh_token"
@@ -73,7 +128,6 @@ class OAuth2Manager:
             if self.config.refresh_token:
                 data["refresh_token"] = self.config.refresh_token
         elif grant_type == "client_credentials":
-            # client_credentials doesn't need extra fields usually
             pass
 
         if self.config.scopes:
@@ -90,59 +144,150 @@ class OAuth2Manager:
             data["client_secret"] = self.config.client_secret
             post_kwargs = {}
 
-        response = await client.post(self.config.token_url, data=data, **post_kwargs)
-        if response.is_error:
-            body = response.text
+        masked_payload = _mask_oauth_payload(data)
 
-            # Generate curl command for debugging a failed token refresh
-            curl_cmd = "<Error generating curl command>"
+        last_exc: Optional[Exception] = None
+        for attempt in range(1, MAX_TOKEN_RETRIES + 1):
+            started_at = datetime.now(UTC)
+            response: Optional[httpx.Response] = None
+            state = "FAILED"
+            exc_for_record: Optional[Exception] = None
+
             try:
-                import shlex
-                from urllib.parse import urlencode
-
-                def _mask_secret(val: str) -> str:
-                    if not val or len(val) <= 4:
-                        return "***"
-                    return f"***{val[-4:]}"
-
-                cmd_parts = [
-                    "curl",
-                    "-v",
-                    "-X",
-                    "POST",
-                    shlex.quote(self.config.token_url),
-                ]
-                # Mask secrets in data
-                masked_data = data.copy()
-                if "client_secret" in masked_data:
-                    masked_data["client_secret"] = _mask_secret(
-                        masked_data["client_secret"]
-                    )
-                if "password" in masked_data:
-                    masked_data["password"] = _mask_secret(masked_data["password"])
-
-                body_str = urlencode(masked_data)
-                cmd_parts.extend(["-d", shlex.quote(body_str)])
-                curl_cmd = " ".join(cmd_parts)
-            except Exception as e:
-                logger.warning(
-                    f"Failed to generate curl command for token refresh error: {e}"
+                response = await client.post(
+                    self.config.token_url, data=data, **post_kwargs
                 )
+                completed_at = datetime.now(UTC)
 
-            raise httpx.HTTPStatusError(
-                f"OAuth2 token refresh failed with status {response.status_code}. Response: {body}\nReplicate with:\n{curl_cmd}",
-                request=response.request,
-                response=response,
-            )
-        self._access_token = response.json()["access_token"]
-        return self._access_token
+                if response.is_error:
+                    body = response.text
+                    state = "FAILED"
+
+                    # Build curl hint (masked)
+                    import shlex as _shlex
+
+                    curl_cmd = "<Error generating curl command>"
+                    try:
+                        curl_cmd = (
+                            f"curl -v -X POST {_shlex.quote(self.config.token_url)}"
+                            f" -d {_shlex.quote(masked_payload.decode('utf-8', errors='replace'))}"
+                        )
+                    except Exception:
+                        pass
+
+                    err = httpx.HTTPStatusError(
+                        f"OAuth2 token refresh failed with status {response.status_code}."
+                        f" Response: {body}\nReplicate with:\n{curl_cmd}",
+                        request=response.request,
+                        response=response,
+                    )
+                    logger.error(
+                        f"OAuth2 token refresh error for {self.integration_name}"
+                        f" (attempt {attempt}/{MAX_TOKEN_RETRIES}):"
+                        f" HTTP {response.status_code} from {self.config.token_url}"
+                    )
+                    exc_for_record = err
+
+                    await record_data_exchange(
+                        DataExchangeEvent(
+                            integration=self.integration_name,
+                            channel="HTTP",
+                            operation="OAUTH2_TOKEN_REFRESH",
+                            remote_system=self.config.token_url,
+                            address=self.config.token_url,
+                            occurred_at=started_at,
+                            completed_at=completed_at,
+                            state=state,
+                            attempt=attempt,
+                            http_method="POST",
+                            status_code=response.status_code,
+                            request_payload=masked_payload,
+                            request_content_type="application/x-www-form-urlencoded",
+                            attrs={"error": str(err)},
+                        )
+                    )
+                    # 4xx/5xx: do not retry — raise immediately
+                    raise err
+
+                # --- Success ---
+                completed_at = datetime.now(UTC)
+                state = "SUCCEEDED"
+                token_data = response.json()
+                self._access_token = token_data["access_token"]
+
+                # Parse expiry
+                expires_in = token_data.get("expires_in")
+                if expires_in is not None:
+                    try:
+                        self._token_expires_at = datetime.now(UTC) + timedelta(
+                            seconds=float(expires_in)
+                        )
+                    except (ValueError, TypeError):
+                        self._token_expires_at = None
+                else:
+                    self._token_expires_at = None
+
+                await record_data_exchange(
+                    DataExchangeEvent(
+                        integration=self.integration_name,
+                        channel="HTTP",
+                        operation="OAUTH2_TOKEN_REFRESH",
+                        remote_system=self.config.token_url,
+                        address=self.config.token_url,
+                        occurred_at=started_at,
+                        completed_at=completed_at,
+                        state=state,
+                        attempt=attempt,
+                        http_method="POST",
+                        status_code=response.status_code,
+                        request_payload=masked_payload,
+                        request_content_type="application/x-www-form-urlencoded",
+                    )
+                )
+                return self._access_token
+
+            except httpx.HTTPStatusError:
+                raise
+            except (httpx.ConnectError, httpx.TimeoutException) as e:
+                completed_at = datetime.now(UTC)
+                state = "TIMEOUT" if isinstance(e, httpx.TimeoutException) else "FAILED"
+                last_exc = e
+                logger.warning(
+                    f"OAuth2 token refresh transient error for {self.integration_name}"
+                    f" (attempt {attempt}/{MAX_TOKEN_RETRIES}): {e}"
+                )
+                await record_data_exchange(
+                    DataExchangeEvent(
+                        integration=self.integration_name,
+                        channel="HTTP",
+                        operation="OAUTH2_TOKEN_REFRESH",
+                        remote_system=self.config.token_url,
+                        address=self.config.token_url,
+                        occurred_at=started_at,
+                        completed_at=completed_at,
+                        state=state,
+                        attempt=attempt,
+                        http_method="POST",
+                        request_payload=masked_payload,
+                        request_content_type="application/x-www-form-urlencoded",
+                        attrs={"error": str(e)},
+                    )
+                )
+                if attempt >= MAX_TOKEN_RETRIES:
+                    raise
+                wait = 2**attempt
+                await asyncio.sleep(wait)
+
+        # Should not reach here, but satisfy type checker
+        raise last_exc  # type: ignore[misc]
 
     def invalidate(self) -> None:
         """Clear the cached access token, forcing a refresh on the next request."""
         self._access_token = None
+        self._token_expires_at = None
 
 
-class HttpClient:
+class HttpClient(BaseClient):
     """
     An enhanced, instrumented async HTTP client.
     Handles auth, retries, normalization, and detailed logging.
@@ -356,7 +501,28 @@ class HttpClient:
             # Handled in request()
             pass
         elif auth_config.type == AuthType.OAUTH2:
-            self._auth_manager = OAuth2Manager(auth_config)
+            self._auth_manager = OAuth2Manager(auth_config, integration_name=self.name)
+
+    def _mask_sensitive_url(self, url: str) -> str:
+        """Return url with values of sensitive query params replaced by ***."""
+        try:
+            parsed = urlparse(url)
+            if not parsed.query:
+                return url
+            # Use manual split to avoid urlencode re-encoding the *** placeholder
+            parts = []
+            for pair in parsed.query.split("&"):
+                if "=" in pair:
+                    k, v = pair.split("=", 1)
+                    if any(s in k.lower() for s in _SENSITIVE_PARAM_KEYS):
+                        parts.append(f"{k}=***")
+                    else:
+                        parts.append(pair)
+                else:
+                    parts.append(pair)
+            return urlunparse(parsed._replace(query="&".join(parts)))
+        except Exception:
+            return url
 
     async def authorize(
         self, headers: Dict[str, str], params: Dict[str, Any], cookies: Dict[str, str]
@@ -402,32 +568,16 @@ class HttpClient:
         if governance_response:
             # If governance returned a response, it's a mock
             logger.info(f"Request to {method} {url} intercepted by mock governance.")
-            # For observability, we still want to record this
-            start_time = datetime.datetime.now(UTC)
-            await record_data_exchange(
-                DataExchangeEvent(
-                    integration=self.settings.client_id,
-                    channel="HTTP (Mock)",
-                    operation=f"{method} {path}",
-                    remote_system=self.base_url,
-                    address=url,
-                    occurred_at=start_time,
-                    completed_at=start_time,
-                    state="SUCCEEDED",
-                    attempt=1,
-                    http_method=method,
-                    status_code=governance_response.status_code,
-                    response_payload=governance_response.content,
-                    response_content_type=governance_response.headers.get(
-                        "Content-Type"
-                    ),
-                ),
-                correlation=None,
-            )
             return governance_response
 
         # Additional Auth Handling
-        await self.authorize(headers, params, cookies)
+        try:
+            await self.authorize(headers, params, cookies)
+        except Exception as auth_exc:
+            logger.error(
+                f"Authorization failed for {self.name} [{method} {url}]: {auth_exc}"
+            )
+            raise
 
         # Observability: Extract Request Payload
         req_content_type = headers.get("Content-Type")
@@ -448,7 +598,7 @@ class HttpClient:
         except Exception as e:
             logger.warning(f"Failed to extract request payload for observability: {e}")
 
-        start_time = datetime.datetime.now(UTC)
+        start_time = datetime.now(UTC)
 
         # Retry Loop
         max_retries = self.settings.retry.max_retries
@@ -479,7 +629,14 @@ class HttpClient:
                         )
                         await asyncio.sleep(wait)
                         # Re-authorize in case token was just invalidated (e.g. 401 + OAuth2)
-                        await self.authorize(headers, params, cookies)
+                        try:
+                            await self.authorize(headers, params, cookies)
+                        except Exception as re_auth_exc:
+                            logger.error(
+                                f"Re-authorization failed for {self.name} after 401"
+                                f" [{method} {url}]: {re_auth_exc}"
+                            )
+                            raise
                         continue
 
                     # Generate curl command for debugging
@@ -503,7 +660,7 @@ class HttpClient:
                 except Exception as e:
                     logger.warning(f"Failed to read response payload: {e}")
 
-                end_time = datetime.datetime.now(UTC)
+                end_time = datetime.now(UTC)
                 state = "SUCCEEDED" if not response.is_error else "FAILED"
 
                 await record_data_exchange(
@@ -512,7 +669,7 @@ class HttpClient:
                         channel="HTTP",
                         operation=f"{method} {path}",
                         remote_system=self.base_url,
-                        address=url,
+                        address=self._mask_sensitive_url(url),
                         occurred_at=start_time,
                         completed_at=end_time,
                         state=state,
@@ -523,6 +680,7 @@ class HttpClient:
                         response_content_type=resp_content_type,
                         request_payload=req_body_bytes,
                         request_content_type=req_content_type,
+                        offload_payloads=files is not None,
                     ),
                     correlation=None,
                 )
@@ -567,7 +725,7 @@ class HttpClient:
                     continue
 
                 # FINAL FAILURE - Observability: TIMEOUT/FAILED
-                end_time = datetime.datetime.now(UTC)
+                end_time = datetime.now(UTC)
 
                 await record_data_exchange(
                     DataExchangeEvent(
@@ -575,7 +733,7 @@ class HttpClient:
                         channel="HTTP",
                         operation=f"{method} {path}",
                         remote_system=self.base_url,
-                        address=url,
+                        address=self._mask_sensitive_url(url),
                         occurred_at=start_time,
                         completed_at=end_time,
                         state=(

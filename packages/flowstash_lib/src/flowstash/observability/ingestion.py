@@ -43,11 +43,19 @@ def set_observability_config(config: ObservabilityConfig):
     _config = config
     configure(config)
 
+    try:
+        from .logging import setup_global_logging
+
+        setup_global_logging()
+    except Exception as e:
+        logger.warning(f"Failed to setup global logging capture: {e}")
+
 
 class AsyncManager:
     _instance = None
 
     def __init__(self, max_workers: int = 4):
+        self._max_workers = max_workers
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
         self._io_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=max_workers
@@ -70,14 +78,36 @@ class AsyncManager:
         return future
 
     def flush(self, timeout: float = 10.0) -> None:
-        """Block until all pending lifecycle futures complete or timeout expires.
-        Safe to call from any thread (sync). Called during graceful shutdown."""
+        """Block until all pending observability work completes (or timeout expires).
+
+        Three-level drain:
+          1. _executor trampoline threads (lifecycle coroutine runners).
+          2. _io_executor store-write threads submitted via execute().
+          3. The store's own internal delivery queue (e.g. ApiEventsStore HTTP queue).
+
+        Safe to call from any thread (sync). Called during graceful shutdown.
+        """
+        # Level 1: wait for lifecycle trampoline threads
         with self._lock:
             pending = list(self._pending)
         if pending:
             concurrent.futures.wait(pending, timeout=timeout)
         with self._lock:
             self._pending.clear()
+
+        # Level 2: wait for any outstanding _io_executor jobs (store writes)
+        self._io_executor.shutdown(wait=True, cancel_futures=False)
+        self._io_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=self._max_workers
+        )
+
+        # Level 3: drain the store's own internal queue (e.g. HTTP delivery queue)
+        try:
+            store = get_events_store()
+            if hasattr(store, "flush"):
+                store.flush(timeout=timeout)
+        except Exception:
+            pass
 
     async def execute(self, func, *args, **kwargs):
         """Execute a blocking function in the thread pool, respecting durability config."""
@@ -102,7 +132,7 @@ class AsyncManager:
             asyncio.create_task(_background())
 
     def execute_fire_and_forget(self, func, *args, **kwargs):
-        """Execute a blocking function in the thread pool without waiting for results."""
+        """Execute a blocking function in the thread pool. Tracked by flush()."""
 
         def _job():
             try:
@@ -111,7 +141,7 @@ class AsyncManager:
                 # Swallow all to prevent recursive logging/failures
                 pass
 
-        self._io_executor.submit(_job)
+        self._submit(_job)
 
 
 def _enqueue_lifecycle(coro_fn: Callable[..., Coroutine], *args, **kwargs) -> None:
@@ -213,7 +243,7 @@ async def record_run_ended(
     await AsyncManager.get_instance().execute(get_events_store().write_run_event, event)
 
 
-async def record__scheduled(
+async def record_run_scheduled(
     correlation: Optional[Correlation] = None,
     scheduled_job_id: Optional[str] = None,
     attrs: Optional[Dict[str, Any]] = None,
@@ -553,7 +583,7 @@ async def record_data_exchange(
     def _process_dx():
         req_ref = None
         req_size = None
-        if event.request_payload:
+        if event.offload_payloads and event.request_payload:
             try:
                 req_ref, req_size, _ = get_blob_store().put(
                     path_hint=f"{corr.run_id}/dx/{dx_id}/request",
@@ -566,7 +596,7 @@ async def record_data_exchange(
 
         res_ref = None
         res_size = None
-        if event.response_payload:
+        if event.offload_payloads and event.response_payload:
             try:
                 res_ref, res_size, _ = get_blob_store().put(
                     path_hint=f"{corr.run_id}/dx/{dx_id}/response",

@@ -233,15 +233,13 @@ class DemoClient(HttpClient):
     async def get_user(self, user_id: int) -> dict:
         response = await self.request("GET", f"/users/{user_id}")
         return response.json()
-
-    @classmethod
-    def get(cls) -> DemoClient:
-        return get_client("demoClient") 
-
-
-# You can then resolve this custom client by name:
-# demo = get_client("DemoClient")
 ```
+
+You can then resolve this custom client by name:
+`demo = get_client("DemoClient")`
+or
+`DemoClient.get_client()`
+
 
 ## Logging
 
@@ -367,3 +365,7 @@ flowstash uses a tiered configuration system that allows for seamless transition
 - **`api_main.py`**: The entry point for the web server. It sets up the FastAPI application and automatically imports modules from `src/api` to register routes.
 - **`worker_main.py`**: The entry point for the background process. It connects to the task backend (like Redis) and automatically imports modules from `src/worker` to register task signatures.
 
+### Imports
+Always import directly from the module level (e.g., api, worker, shared), assuming src is the root of your $PYTHONPATH.
+This mirrors the Docker environment structure, ensuring cleaner code and consistency across environments. When writing tests or standalone scripts, you must either manually add src to your PYTHONPATH or configure poetry to install src as the package source.
+Avoid relative imports

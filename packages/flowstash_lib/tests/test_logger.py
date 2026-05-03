@@ -133,3 +133,44 @@ def test_filter_fn_resolution():
                 enqueue_log_event("any", logging.INFO, "Dropped message")
             
             assert mock_store.write_log.call_count == 1
+
+
+def test_global_handler_captures_standard_logger():
+    """
+    Standard logging.getLogger() calls inside an integration_context must be
+    forwarded to observability via the root handler path (not IntegrationLogger).
+    """
+    from flowstash.observability.logging import setup_global_logging
+    setup_global_logging()  # idempotent — ensures handler is installed
+
+    std_logger = logging.getLogger("test.some.external.module")
+
+    with integration_context(integration="test-int"):
+        with patch("flowstash.observability.logging.enqueue_log_event") as mock_enqueue:
+            std_logger.info("standard log from external module")
+
+            mock_enqueue.assert_called_once()
+            _, k = mock_enqueue.call_args
+            assert k["logger_name"] == "test.some.external.module"
+            assert k["levelno"] == logging.INFO
+            assert k["message"] == "standard log from external module"
+            assert k["exc_info"] is False
+
+
+def test_global_handler_exc_info_false_for_no_exception():
+    """
+    Records without an active exception must not set exc_info=True.
+    Regression for bool((None, None, None)) == True.
+    """
+    from flowstash.observability.logging import setup_global_logging
+    setup_global_logging()
+
+    std_logger = logging.getLogger("test.exc_info_check")
+
+    with integration_context(integration="test-int"):
+        with patch("flowstash.observability.logging.enqueue_log_event") as mock_enqueue:
+            std_logger.info("no exception here")
+
+            mock_enqueue.assert_called_once()
+            _, k = mock_enqueue.call_args
+            assert k["exc_info"] is False

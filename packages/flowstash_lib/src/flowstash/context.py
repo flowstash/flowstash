@@ -107,9 +107,11 @@ class integration_context:
         current_record_key: Optional[str] = None,
         ingress_name: Optional[str] = None,
         span_name: Optional[str] = None,
+        record_lifecycle: bool = True,
         **kwargs,
     ):
         self.span_name = span_name
+        self._record_lifecycle = record_lifecycle
         self.overrides = {
             "integration": integration,
             "integration_pipeline": integration_pipeline,
@@ -192,23 +194,24 @@ class integration_context:
             record_span_started,
         )
 
-        corr = ctx.corelation
-        if self._is_root_run:
-            _enqueue_lifecycle(record_run_started, correlation=corr)
-        else:
-            name = (
-                self.span_name
-                or self.overrides.get("integration_pipeline")
-                or ctx.integration_pipeline
-                or "span"
-            )
-            self._recorded_span_name = name
-            _enqueue_lifecycle(
-                record_span_started,
-                name=name,
-                correlation=corr,
-                start_time=self._start_time,
-            )
+        if self._record_lifecycle:
+            corr = ctx.corelation
+            if self._is_root_run:
+                _enqueue_lifecycle(record_run_started, correlation=corr)
+            else:
+                name = (
+                    self.span_name
+                    or self.overrides.get("integration_pipeline")
+                    or ctx.integration_pipeline
+                    or "span"
+                )
+                self._recorded_span_name = name
+                _enqueue_lifecycle(
+                    record_span_started,
+                    name=name,
+                    correlation=corr,
+                    start_time=self._start_time,
+                )
 
         # Automatically bind State if possible (to avoid circular imports, we do it carefully)
         try:
@@ -222,7 +225,7 @@ class integration_context:
         return ctx
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if self._last_ctx is not None:
+        if self._record_lifecycle and self._last_ctx is not None:
             from .observability.ingestion import (
                 _enqueue_lifecycle,
                 record_run_ended,

@@ -10,7 +10,8 @@ auth:
   token_url: "https://auth.example.com/token"
   refresh_token: null
   scopes: []
-  extra_params: {}
+  # clientAuthMethod: client_secret_basic (default) # Supported values: client_secret_basic, client_secret_post
+  # extra_params: {}
 
 # Authentication Alternatives 
 # ------------------------------------------s

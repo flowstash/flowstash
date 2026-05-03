@@ -1,3 +1,4 @@
+import os
 from typing import Tuple, Optional
 from .model import RunEvent, SpanEvent, Correlation, DataExchange, RecordLink
 from .stores.protocols import EventsStore, DataExchangeStore, BlobStore, RecordsStore
@@ -90,7 +91,7 @@ _records_store: RecordsStore = NoOpRecordsStore()
 
 def configure(config: ObservabilityConfig):
     global _events_store, _dx_store, _blob_store, _records_store
-
+    print(f"Observability config: {config.store_type}")
     if config.store_type == StoreType.DISABLED:
         _events_store = NoOpEventsStore()
         _dx_store = NoOpDataExchangeStore()
@@ -121,7 +122,9 @@ def configure(config: ObservabilityConfig):
         )
 
         if not config.managed_api_url:
-            raise ValueError("managed_api_url is required for MANAGED store type")
+            config.managed_api_url = os.getenv(
+                "FLOWSTASH_API_URL", "https://api.flowstash.com"
+            )
 
         _events_store = ApiEventsStore(config.managed_api_url, config.managed_api_key)
         _dx_store = ApiDataExchangeStore(config.managed_api_url, config.managed_api_key)
@@ -179,7 +182,3 @@ def flush_stores(timeout: float = 10.0) -> None:
                 flush(timeout=timeout)
             except Exception:
                 pass
-
-
-# Initialize with default configuration
-configure(ObservabilityConfig())

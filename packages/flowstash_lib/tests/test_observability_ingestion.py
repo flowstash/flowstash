@@ -4,8 +4,8 @@ from unittest.mock import MagicMock, patch
 from datetime import datetime
 from flowstash.context import integration_context
 from flowstash.observability.ingestion import (
-    record__started,
-    record__ended,
+    record_run_started,
+    record_run_ended,
     record_log,
     record_data_exchange,
     set_observability_config,
@@ -43,8 +43,8 @@ async def testrecord__started_immediate(mock_stores):
     events_store, _, _ = mock_stores
     set_observability_config(ObservabilityConfig(durability=DurabilityMode.IMMEDIATE))
 
-    with integration_context(integration="app", integration_pipeline="pipe") as ctx:
-        await record__started(artifact_id="art1")
+    with integration_context(integration="app", integration_pipeline="pipe", record_lifecycle=False) as ctx:
+        await record_run_started(artifact_id="art1")
 
     events_store.write_run_event.assert_called_once()
     event = events_store.write_run_event.call_args[0][0]
@@ -60,8 +60,8 @@ async def testrecord__started_eventual(mock_stores):
     events_store, _, _ = mock_stores
     set_observability_config(ObservabilityConfig(durability=DurabilityMode.EVENTUAL))
 
-    with integration_context() as ctx:
-        await record__started()
+    with integration_context(record_lifecycle=False) as ctx:
+        await record_run_started()
 
     # Wait for background task
     await asyncio.sleep(0.1)

@@ -153,11 +153,15 @@ async def handle_task(payload: TaskPayload):
     status_result = "SUCCEEDED"
     error = None
 
+    # record_lifecycle=False: we fire STARTED/ENDED explicitly below so that we can
+    # control status precisely (especially returning 200 on failure without letting
+    # the context manager auto-record SUCCEEDED on exception-caught-internally paths).
     with integration_context(
         integration=integration,
         integration_pipeline=pipeline,
         run_id=run_id,
         tags=tags,
+        record_lifecycle=False,
     ) as ctx:
         await record_run_started(correlation=ctx.corelation)
 

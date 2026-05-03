@@ -93,9 +93,7 @@ def deploy(
     artifact: Optional[str] = typer.Option(
         None, "--artifact", "-a", help="Artifact ID to deploy"
     ),
-    non_interactive: bool = typer.Option(
-        False, "--non-interactive", help="Do not ask for confirmation"
-    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Do not ask for confirmation"),
 ):
     """Deploy an artifact to the managed platform for a specified environment."""
     project_config = load_project_config()
@@ -106,7 +104,7 @@ def deploy(
         raise typer.Exit(code=1)
 
     # Ask for confirmation unless non-interactive is provided
-    if not non_interactive:
+    if not yes:
         from rich.prompt import Confirm
 
         if not Confirm.ask(f"Are you sure you want to deploy to '{env}'?"):
@@ -131,7 +129,7 @@ def deploy(
 
     project_id = project_config.project_id
     if not project_id:
-        if not non_interactive:
+        if not yes:
             from rich.prompt import Confirm
 
             if Confirm.ask(

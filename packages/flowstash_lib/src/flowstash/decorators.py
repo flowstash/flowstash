@@ -7,7 +7,7 @@ from typing import Any, Callable, Optional, TypeVar, Awaitable, Union, Protocol,
 from .context import integration_context, current_context, IntegrationContext
 from opentelemetry import trace
 from .queue.backend import Schedule, get_backend, register_task_schedule
-from .observability.ingestion import record__scheduled
+from .observability.ingestion import _enqueue_lifecycle, record_run_scheduled
 
 
 def get_tracer():
@@ -159,16 +159,6 @@ class TaskWrapper:
         ctx = current_context()
         is_subtask = ctx is not None
 
-        def _fire_scheduled(coro):
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    loop.create_task(coro)
-                else:
-                    loop.run_until_complete(coro)
-            except RuntimeError:
-                asyncio.run(coro)
-
         if not ctx:
             trace_id = secrets.token_hex(16)
             span_id = secrets.token_hex(8)
@@ -179,7 +169,7 @@ class TaskWrapper:
                 traceparent=f"00-{trace_id}-{span_id}-01",
                 tags=self.metadata.get("tags") or {},
             )
-        _fire_scheduled(record__scheduled(correlation=ctx.corelation))
+        _enqueue_lifecycle(record_run_scheduled, correlation=ctx.corelation)
 
         return backend.submit(
             self._backend_handler or self.func,
@@ -202,16 +192,6 @@ class TaskWrapper:
         ctx = current_context()
         is_subtask = ctx is not None
 
-        def _fire_scheduled(coro):
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    loop.create_task(coro)
-                else:
-                    loop.run_until_complete(coro)
-            except RuntimeError:
-                asyncio.run(coro)
-
         if not ctx:
             trace_id = secrets.token_hex(16)
             span_id = secrets.token_hex(8)
@@ -222,9 +202,7 @@ class TaskWrapper:
                 traceparent=f"00-{trace_id}-{span_id}-01",
                 tags=self.metadata.get("tags") or {},
             )
-        _fire_scheduled(
-            record__scheduled(correlation=ctx.corelation, attrs={"delay": eta_or_delay})
-        )
+        _enqueue_lifecycle(record_run_scheduled, correlation=ctx.corelation, attrs={"delay": eta_or_delay})
 
         return backend.schedule(
             self._backend_handler or self.func,

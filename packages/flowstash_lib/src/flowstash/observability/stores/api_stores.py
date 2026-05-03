@@ -61,11 +61,12 @@ class _AsyncWorker:
                     resp.raise_for_status()
                 except Exception as e:
                     logger.warning(
-                        "Observability: failed to POST to %s%s — %s. "
+                        "Observability: failed to POST to %s%s — %s. Payload: %s. "
                         "Check that managed_api_url is correct and the managed API is running.",
                         self.api_url,
                         endpoint,
                         e,
+                        payload,
                     )
                 finally:
                     self._queue.task_done()
@@ -128,13 +129,20 @@ class ApiDataExchangeStore(DataExchangeStore):
         self.client = httpx.Client(headers=self.headers, timeout=10.0)
 
     def write_data_exchange(self, dx: DataExchange) -> None:
+        payload = _to_json_serializable(dx)
         try:
-            self.client.post(
+            resp = self.client.post(
                 f"{self.api_url}/ingestion/data-exchanges",
-                json=_to_json_serializable(dx),
+                json=payload,
             )
+            resp.raise_for_status()
         except Exception as e:
-            print(f"Failed to ship data exchange: {e}")
+            logger.warning(
+                "Observability: failed to ship data exchange to %s/ingestion/data-exchanges — %s. Payload: %s",
+                self.api_url,
+                e,
+                payload,
+            )
 
 
 class ApiRecordsStore(RecordsStore):
@@ -144,13 +152,20 @@ class ApiRecordsStore(RecordsStore):
         self.client = httpx.Client(headers=self.headers, timeout=10.0)
 
     def write_record_link(self, link: RecordLink) -> None:
+        payload = _to_json_serializable(link)
         try:
-            self.client.post(
+            resp = self.client.post(
                 f"{self.api_url}/ingestion/records",
-                json=_to_json_serializable(link),
+                json=payload,
             )
+            resp.raise_for_status()
         except Exception as e:
-            print(f"Failed to ship record link: {e}")
+            logger.warning(
+                "Observability: failed to ship record link to %s/ingestion/records — %s. Payload: %s",
+                self.api_url,
+                e,
+                payload,
+            )
 
 
 class ApiBlobStore(BlobStore):
@@ -164,12 +179,17 @@ class ApiBlobStore(BlobStore):
     ) -> Tuple[str, int, str]:
         try:
             files = {"file": (path_hint, data, content_type)}
-            resp = self.client.post(f"{self.api_url}/v1/ingestion/blobs", files=files)
+            resp = self.client.post(f"{self.api_url}/ingestion/blobs", files=files)
             resp.raise_for_status()
             res = resp.json()
             return res["payload_ref"], res["size_bytes"], res["sha256"]
         except Exception as e:
-            print(f"Failed to upload blob: {e}")
+            logger.warning(
+                "Observability: failed to upload blob %s to %s/ingestion/blobs — %s",
+                path_hint,
+                self.api_url,
+                e,
+            )
             return f"error://{path_hint}", len(data), "error-sha"
 
     def get(self, payload_ref: str) -> bytes:
@@ -180,5 +200,10 @@ class ApiBlobStore(BlobStore):
             resp.raise_for_status()
             return resp.content
         except Exception as e:
-            print(f"Failed to retrieve blob: {e}")
+            logger.warning(
+                "Observability: failed to retrieve blob %s from %s/observability/blobs — %s",
+                payload_ref,
+                self.api_url,
+                e,
+            )
             return b""

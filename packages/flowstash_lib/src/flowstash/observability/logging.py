@@ -82,3 +82,78 @@ class IntegrationLogger:
 
 # Create singleton
 logger = IntegrationLogger(logging.getLogger("flowstash.user"))
+
+_global_logging_setup = False
+
+def setup_global_logging():
+    global _global_logging_setup
+    if _global_logging_setup:
+        return
+    _global_logging_setup = True
+    
+    import logging
+    import sys
+
+    class IntegrationLogHandler(logging.Handler):
+        def emit(self, record):
+            # Prevent infinite loops and only capture when inside a context
+            if get_context() is None or record.name.startswith("flowstash.observability"):
+                return
+
+            try:
+                enqueue_log_event(
+                    logger_name=record.name,
+                    levelno=record.levelno,
+                    message=record.getMessage(),
+                    attrs=getattr(record, "attrs", None),
+                    exc_info=record.exc_info is not None and record.exc_info[0] is not None,
+                )
+            except Exception:
+                pass
+
+    handler = IntegrationLogHandler()
+    handler.setLevel(logging.NOTSET)
+
+    root_logger = logging.getLogger()
+    # Existing root handlers with NOTSET level relied on the root logger's WARNING level
+    # for their effective filtering. Pin them explicitly so they don't start emitting
+    # DEBUG/INFO after we lower the root level below.
+    for existing_handler in root_logger.handlers:
+        if existing_handler.level == logging.NOTSET:
+            existing_handler.setLevel(logging.WARNING)
+
+    root_logger.addHandler(handler)
+    # Allow all records to be created and reach our handler.
+    # enqueue_log_event() applies the min_level / prefix filters from ObservabilityConfig.
+    root_logger.setLevel(logging.NOTSET)
+    
+    class IntegrationStreamProxy:
+        def __init__(self, original_stream, levelno):
+            self.original_stream = original_stream
+            self.levelno = levelno
+            self.logger_name = "stdout" if levelno == logging.INFO else "stderr"
+
+        def write(self, data):
+            self.original_stream.write(data)
+            from ..context import get_context
+            if get_context() is not None:
+                text = data.strip()
+                if text:
+                    from .ingestion import enqueue_log_event
+                    try:
+                        enqueue_log_event(
+                            logger_name=self.logger_name,
+                            levelno=self.levelno,
+                            message=text
+                        )
+                    except Exception:
+                        pass
+
+        def flush(self):
+            self.original_stream.flush()
+
+        def __getattr__(self, name):
+            return getattr(self.original_stream, name)
+            
+    sys.stdout = IntegrationStreamProxy(sys.stdout, logging.INFO)
+    sys.stderr = IntegrationStreamProxy(sys.stderr, logging.ERROR)

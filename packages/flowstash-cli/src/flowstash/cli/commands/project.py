@@ -556,7 +556,8 @@ def env_add(
 
 @app.command("delete")
 def env_delete(
-    env_name: str = typer.Argument(..., help="Name of the environment to delete")
+    env_name: str = typer.Argument(..., help="Name of the environment to delete"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
 ):
     """
     [bold red]Delete an environment[/bold red] from your project.
@@ -588,7 +589,7 @@ def env_delete(
 
     from rich.prompt import Confirm
 
-    if not Confirm.ask(
+    if not yes and not Confirm.ask(
         f"Are you sure you want to delete environment [bold red]{env_name}[/bold red]?"
     ):
         console.print("Cancelled.")
@@ -603,7 +604,7 @@ def env_delete(
     # Optionally delete the folder
     env_folder = root / env_name
     if env_folder.exists() and env_folder.is_dir():
-        if Confirm.ask(
+        if yes or Confirm.ask(
             f"Do you also want to delete the configuration folder [bold]{env_name}/[/bold]?"
         ):
             import shutil

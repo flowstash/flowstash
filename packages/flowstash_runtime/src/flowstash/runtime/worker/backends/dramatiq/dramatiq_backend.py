@@ -51,6 +51,12 @@ class AsyncRunner(threading.local):
         def execute_fire(coro):
             try:
                 loop.run_until_complete(coro)
+                # Drain any asyncio.create_task tasks scheduled by EVENTUAL durability mode.
+                # Without this, tasks created inside `execute` (EVENTUAL branch) are never
+                # run because this thread is the only loop driver.
+                pending = asyncio.all_tasks(loop)
+                if pending:
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
             except Exception:
                 pass
 
@@ -314,12 +320,15 @@ class FrameworkContextMiddleware(dramatiq.Middleware):
         tags = headers.get("fw.tags", {})
         scheduled_job_id = headers.get("fw.scheduled_job_id")  # Extract dedicated field
 
-        # Create/join integration context
+        # Create/join integration context.
+        # record_lifecycle=False because this middleware records STARTED/ENDED explicitly
+        # below — prevents double-recording that would occur if integration_context auto-fired them.
         ctx_mgr = integration_context(
             integration=integration,
             integration_pipeline=pipeline,
             run_id=run_id,
             tags=tags,
+            record_lifecycle=False,
         )
         ctx = ctx_mgr.__enter__()
 
@@ -343,12 +352,6 @@ class FrameworkContextMiddleware(dramatiq.Middleware):
                 )
             )
         else:
-            _fire(
-                record_run_started(
-                    correlation=self.local.ctx.corelation, status="RUNNING_SUBTASK"
-                )
-            )  # Or Span?
-            # Actually, user says "treat as span".
             _fire(
                 record_span_started(
                     name=getattr(self.local, "span_name", "task"),
@@ -406,6 +409,16 @@ class FrameworkContextMiddleware(dramatiq.Middleware):
 
             if hasattr(self.local, "ctx_mgr"):
                 self.local.ctx_mgr.__exit__(None, None, None)
+
+        # Flush all pending observability writes so lifecycle events are durably persisted
+        # before the worker picks up the next message.  Respects the config flag so
+        # high-throughput, best-effort deployments can opt out.
+        try:
+            from flowstash.observability.ingestion import _config as _obs_config, AsyncManager
+            if getattr(_obs_config, "flush_on_task_exit", True):
+                AsyncManager.get_instance().flush(timeout=5.0)
+        except Exception:
+            pass
 
     def before_enqueue(self, broker, message, delay):
         # Tags are usually already injected by the backend in our design,

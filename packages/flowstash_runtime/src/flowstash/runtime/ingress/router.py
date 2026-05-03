@@ -5,30 +5,30 @@ Builds FastAPI routes from webhooks registered with @ingress.webhook decorator.
 """
 import inspect
 from typing import Any, Optional
+import datetime
+
 from fastapi import APIRouter, Request, Response
+from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
+
 from flowstash.ingress import ingress
 from flowstash.context import integration_context
+from flowstash.observability.ingestion import record_data_exchange
+from flowstash.observability.model import DataExchangeEvent
 
 
 async def _invoke_handler(handler, request: Request, body: bytes) -> Any:
     """
-    Invoke a webhook handler within the integration context.
-    
+    Invoke a webhook handler.
     Handles both sync and async handlers.
     """
-    metadata = handler._ingress_metadata
+    # Pass the request to the handler - let the handler decide what to do with it
+    if inspect.iscoroutinefunction(handler):
+        result = await handler(request)
+    else:
+        result = handler(request)
     
-    with integration_context(
-        integration=metadata["integration"],
-        integration_pipeline=metadata["pipeline"]
-    ):
-        # Pass the request to the handler - let the handler decide what to do with it
-        if inspect.iscoroutinefunction(handler):
-            result = await handler(request)
-        else:
-            result = handler(request)
-        
-        return result
+    return result
 
 
 def build_webhook_router() -> APIRouter:
@@ -50,14 +50,71 @@ def build_webhook_router() -> APIRouter:
         methods = [metadata.get("method", "POST")]
 
         # Create endpoint closure that captures the handler
-        # Define the endpoint function factory
         def create_endpoint(h=handler):
             async def endpoint(request: Request) -> Response:
-                result = await _invoke_handler(h, request, await request.body())
-                # Default to 202 Accepted for webhook processing
-                if result is None:
-                    return Response(status_code=202)
-                return result
+                body_bytes = await request.body()
+                meta = h._ingress_metadata
+                
+                with integration_context(
+                    integration=meta["integration"],
+                    integration_pipeline=meta["pipeline"]
+                ):
+                    start_time = datetime.datetime.now(datetime.UTC)
+                    try:
+                        result = await _invoke_handler(h, request, body_bytes)
+                        
+                        # Handle response mapping
+                        if result is None:
+                            response = Response(status_code=202)
+                        elif isinstance(result, Response):
+                            response = result
+                        else:
+                            response = JSONResponse(content=jsonable_encoder(result))
+
+                        end_time = datetime.datetime.now(datetime.UTC)
+                        
+                        # Attempt to capture body for logging
+                        response_body = getattr(response, "body", b"")
+                        
+                        await record_data_exchange(DataExchangeEvent(
+                            integration=meta["integration"],
+                            channel="WEBHOOK",
+                            operation=f"{request.method} {meta['path']}",
+                            remote_system=request.client.host if request.client else "unknown",
+                            address=str(request.url),
+                            occurred_at=start_time,
+                            completed_at=end_time,
+                            state="SUCCEEDED",
+                            attempt=1,
+                            http_method=request.method,
+                            status_code=response.status_code,
+                            request_payload=body_bytes,
+                            request_content_type=request.headers.get("content-type"),
+                            response_payload=response_body,
+                            response_content_type=response.headers.get("content-type"),
+                        ))
+                        return response
+                    
+                    except Exception as e:
+                        end_time = datetime.datetime.now(datetime.UTC)
+                        await record_data_exchange(DataExchangeEvent(
+                            integration=meta["integration"],
+                            channel="WEBHOOK",
+                            operation=f"{request.method} {meta['path']}",
+                            remote_system=request.client.host if request.client else "unknown",
+                            address=str(request.url),
+                            occurred_at=start_time,
+                            completed_at=end_time,
+                            state="FAILED",
+                            attempt=1,
+                            http_method=request.method,
+                            status_code=500,
+                            request_payload=body_bytes,
+                            request_content_type=request.headers.get("content-type"),
+                            attrs={"error": str(e)}
+                        ))
+                        raise
+
             # Attach metadata for CLI reflection traversing FastAPI routes
             endpoint._ingress_metadata = h._ingress_metadata
             return endpoint

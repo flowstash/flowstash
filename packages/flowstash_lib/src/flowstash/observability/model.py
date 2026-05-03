@@ -4,6 +4,7 @@ from datetime import datetime, UTC
 from typing import Optional, Literal, Union
 from enum import Enum
 
+
 @dataclass(frozen=True)
 class Correlation:
 
@@ -58,6 +59,7 @@ class Span:
 Channel = Literal["HTTP", "FTP", "S3", "SFTP", "MQ", "FILE", "CUSTOM"]
 State = Literal["STARTED", "SUCCEEDED", "FAILED", "RETRIED", "TIMEOUT", "CANCELLED"]
 
+
 @dataclass(frozen=True)
 class DataExchange:
     id: str  # uuid
@@ -91,34 +93,39 @@ class DataExchange:
 
 EventType = Literal["STARTED", "PROGRESS", "ENDED", "SCHEDULED"]
 
+
 @dataclass(frozen=True)
 class RunEvent:
     event_type: EventType
     correlation: Correlation
     occurred_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     scheduled_job_id: Optional[str] = None
-    
+
     # Optional fields depending on event type
     artifact_id: Optional[str] = None
     env_snapshot_id: Optional[str] = None
     status: str = "RUNNING"
     attrs: dict = field(default_factory=dict)
-    finished_at: Optional[datetime] = None  # Specific for ENDED if needed, or just use occurred_at
+    finished_at: Optional[datetime] = (
+        None  # Specific for ENDED if needed, or just use occurred_at
+    )
+
 
 @dataclass(frozen=True)
 class SpanEvent:
     event_type: EventType
     correlation: Correlation
-    name: str 
+    name: str
     occurred_at: datetime = field(default_factory=lambda: datetime.now(UTC))
-    
+
     status: str = "STARTED"
-    
+
     # Optional fields
-    start_time: Optional[datetime] = None # For ENDED/duration
+    start_time: Optional[datetime] = None  # For ENDED/duration
     end_time: Optional[datetime] = None
     error_summary: Optional[str] = None
     attrs: dict = field(default_factory=dict)
+
 
 @dataclass(frozen=True)
 class DataExchangeEvent:
@@ -140,12 +147,17 @@ class DataExchangeEvent:
     response_content_type: Optional[str] = None
     request_size_bytes: Optional[int] = None
     response_size_bytes: Optional[int] = None
+    offload_payloads: bool = (
+        False  # if True, upload request/response payloads to blob store
+    )
     attrs: dict = field(default_factory=dict)
+
 
 class RecordLinkKind(str, Enum):
     PUBLISHED = "PUBLISHED"
     CONSUMED = "CONSUMED"
     LINKED = "LINKED"
+
 
 @dataclass(frozen=True)
 class RecordLink:
@@ -155,7 +167,7 @@ class RecordLink:
     run_id: str = ""
     trace_id: Optional[str] = None
     span_id: Optional[str] = None
-    record_key: str = "" # (integration, record_type, record_id)
+    record_key: str = ""  # (integration, record_type, record_id)
     event_time: datetime = field(default_factory=lambda: datetime.now(UTC))
     kind: RecordLinkKind = RecordLinkKind.PUBLISHED
-    source: Optional[str] = None # e.g. feed_id
+    source: Optional[str] = None  # e.g. feed_id
