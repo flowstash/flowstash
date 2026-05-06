@@ -19,7 +19,7 @@ publish-base: build-base
 
 
 
-.PHONY: test lint format build release-check publish clean bump-version
+.PHONY: test lint format build release-check publish clean bump-version bump-version-patch new-version new-patch
 
 
 test:
@@ -60,6 +60,10 @@ bump-version:
 bump-version-patch:
 	poetry version patch
 	@$(MAKE) update-internal-versions
+
+new-version: bump-version build build-base publish
+
+new-patch: bump-version-patch build build-base publish
 
 update-internal-versions:
 	@NEW_VERSION=$$(poetry version -s); \

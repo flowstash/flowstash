@@ -25,7 +25,7 @@ def _decode_entry(entry: StateEntry) -> Any:
     """Decode a StateEntry's value according to its content_type."""
     ct = entry.content_type.lower().split(";")[0].strip()
     if ct == "application/json":
-        return json.loads(entry.value.decode("utf-8"))
+        return json.loads(entry.value.decode("utf-8")) if entry.value else None
     if ct.startswith("text/"):
         return entry.value.decode("utf-8")
     # Binary / unknown — return raw bytes

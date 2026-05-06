@@ -3,6 +3,7 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Optional, List, Union
 import importlib
+import importlib.metadata
 import importlib.util
 import dramatiq
 from dramatiq.brokers.redis import RedisBroker
@@ -147,6 +148,17 @@ def _build_redis_url(config: RuntimeConfig) -> str:
     return "redis://localhost:6379/0"
 
 
+def _get_flowstash_version() -> str:
+    """Return the installed Flowstash version if package metadata is available."""
+    for package_name in ("flowstash", "flowstash-runtime"):
+        try:
+            return importlib.metadata.version(package_name)
+        except importlib.metadata.PackageNotFoundError:
+            continue
+
+    return "unknown"
+
+
 def initialize_runtime(
     config: RuntimeConfig, auto_import: Optional[List[Union[str, Path]]] = None
 ) -> Runtime:
@@ -156,6 +168,8 @@ def initialize_runtime(
     This is the single entry point for setting up the producer side (backend submission)
     and registry initialization.
     """
+    print(f"Flowstash version: {_get_flowstash_version()}")
+
     # 1. Init Observability (if present)
     if config.observability:
         from flowstash.observability.ingestion import set_observability_config

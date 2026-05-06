@@ -180,55 +180,68 @@ async def handle_task(payload: TaskPayload):
     # control status precisely (especially returning 200 on failure without letting
     # the context manager auto-record SUCCEEDED on exception-caught-internally paths).
     # No run_id override: integration_context allocates a fresh run_id for each attempt.
-    with integration_context(
-        integration=integration,
-        integration_pipeline=pipeline,
-        parent_run_id=parent_run_id,
-        operation_id=operation_id,
-        tags=tags,
-        record_lifecycle=False,
-    ) as ctx:
-        await record_run_started(correlation=ctx.corelation)
+    try:
+        with integration_context(
+            integration=integration,
+            integration_pipeline=pipeline,
+            parent_run_id=parent_run_id,
+            operation_id=operation_id,
+            tags=tags,
+            record_lifecycle=False,
+        ) as ctx:
+            await record_run_started(correlation=ctx.corelation)
 
-        try:
-            # Handle both TaskWrapper.run() and plain callables
-            args = payload.args
-            kwargs = payload.kwargs
+            try:
+                # Handle both TaskWrapper.run() and plain callables
+                args = payload.args
+                kwargs = payload.kwargs
 
-            if hasattr(func, "run"):
-                result = await func.run(*args, **kwargs)
-            elif hasattr(func, "func"):
-                # TaskWrapper — call the underlying func
-                underlying = func.func
-                if inspect.iscoroutinefunction(underlying):
-                    result = await underlying(*args, **kwargs)
+                if hasattr(func, "run"):
+                    result = await func.run(*args, **kwargs)
+                elif hasattr(func, "func"):
+                    # TaskWrapper — call the underlying func
+                    underlying = func.func
+                    if inspect.iscoroutinefunction(underlying):
+                        result = await underlying(*args, **kwargs)
+                    else:
+                        result = underlying(*args, **kwargs)
                 else:
-                    result = underlying(*args, **kwargs)
-            else:
-                if inspect.iscoroutinefunction(func):
-                    result = await func(*args, **kwargs)
-                else:
-                    result = func(*args, **kwargs)
+                    if inspect.iscoroutinefunction(func):
+                        result = await func(*args, **kwargs)
+                    else:
+                        result = func(*args, **kwargs)
 
-        except Exception as e:
-            status_result = "FAILED"
-            error = str(e)
-            logger.error(f"Task execution failed: {func_ref}: {e}", exc_info=True)
+            except Exception as e:
+                import traceback
+                status_result = "FAILED"
+                error = str(e)
+                tb = traceback.format_exc()
+                logger.error(f"Task execution failed: {func_ref}: {e}", exc_info=True)
+                await record_run_ended(
+                    status=status_result,
+                    correlation=ctx.corelation,
+                    attrs={"error": error, "traceback": tb},
+                )
+                # Return 200 with FAILED status so scheduler (e.g. QStash) does not retry unboundedly
+                return {
+                    "status": "FAILED",
+                    "error": error,
+                    "task": func_ref,
+                }
+
             await record_run_ended(
                 status=status_result,
                 correlation=ctx.corelation,
             )
-            # Return 200 with FAILED status so scheduler (e.g. QStash) does not retry unboundedly
-            return {
-                "status": "FAILED",
-                "error": error,
-                "task": func_ref,
-            }
 
-        await record_run_ended(
-            status=status_result,
-            correlation=ctx.corelation,
-        )
+    finally:
+        import asyncio
+        from flowstash.observability.ingestion import AsyncManager
+        
+        # In serverless environments (like Cloud Run), the CPU is frozen immediately
+        # after the HTTP response is returned. We MUST flush observability events
+        # synchronously before returning.
+        await asyncio.to_thread(AsyncManager.get_instance().flush, 5.0)
 
     return {
         "status": "ok",

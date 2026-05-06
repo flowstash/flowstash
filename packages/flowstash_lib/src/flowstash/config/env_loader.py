@@ -119,6 +119,13 @@ def load_config_dir(config_dir: str | Path, environment: str) -> RuntimeConfig:
     - {config_dir}/{environment}/ - environment-specific overrides
     """
 
+    # Preserve specific protected environment variables
+    # to ensure system environment values take precedence over .env files.
+    protected_keys = ["FLOWSTASH_API_URL", "FLOWSTASH_API_KEY"]
+    protected_values = {
+        key: os.environ[key] for key in protected_keys if key in os.environ
+    }
+
     # Load .env file if it exists
     load_dotenv()
 
@@ -155,6 +162,10 @@ def load_config_dir(config_dir: str | Path, environment: str) -> RuntimeConfig:
     env_env_file = env_path / ".env"
     if env_env_file.exists():
         load_dotenv(env_env_file, override=True)
+
+    # Re-introduce protected environment variables if they were set
+    for key, value in protected_values.items():
+        os.environ[key] = value
 
     # Load shared config
     obs_shared, backend_shared, clients_shared = None, None, {}

@@ -10,7 +10,8 @@ from typing import (
     Union,
     TYPE_CHECKING,
 )
-from pydantic import BaseModel
+import re
+from pydantic import BaseModel, field_validator
 from ..context import IntegrationContext
 
 if TYPE_CHECKING:
@@ -31,6 +32,37 @@ class JobHandle(Protocol):
 
 class Schedule(BaseModel):
     cron: str
+
+    @field_validator("cron")
+    @classmethod
+    def validate_cron_expression(cls, v: str) -> str:
+        cron_expr = v.strip()
+        
+        if cron_expr.startswith("CRON_TZ="):
+            parts = cron_expr.split(" ", 1)
+            if len(parts) == 2:
+                cron_expr = parts[1].strip()
+            else:
+                raise ValueError("Invalid cron expression format with CRON_TZ")
+
+        if cron_expr.startswith("@"):
+            raise ValueError("Macro aliases (e.g., @daily) are not allowed")
+
+        fields = cron_expr.split()
+        if len(fields) != 5:
+            raise ValueError(f"Cron expression must have exactly 5 fields, got {len(fields)}")
+
+        allowed_pattern = re.compile(r"^[0-9\*\,\-\/]+$")
+        
+        for field in fields:
+            if not allowed_pattern.match(field):
+                raise ValueError(
+                    f"Invalid characters in cron field '{field}'. "
+                    "Only standard numeric syntax, '*', '-', ',', and '/' are allowed. "
+                    "Hashes (H), descriptors (L, W, etc.), and words are not allowed."
+                )
+
+        return v
 
 
 class TaskBackend(Protocol):

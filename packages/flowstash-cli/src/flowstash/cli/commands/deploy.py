@@ -14,6 +14,7 @@ console = Console()
 # Status labels shown to the user while polling
 _STATUS_LABELS = {
     "QUEUED": "Queued, waiting for deployment to start...",
+    "VALIDATING": "Validating container images...",
     "DEPLOYING": "Deploying services...",
     "HEALTH_CHECK": "Health-checking API and Worker...",
     "SYNCING_SCHEDULES": "Fetching and syncing scheduled tasks...",

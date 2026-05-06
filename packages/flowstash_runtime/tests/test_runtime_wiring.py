@@ -1,5 +1,6 @@
 import pytest
 from flowstash.config.runtime_config import RuntimeConfig, BackendConfig, BackendType
+from flowstash.runtime.wiring import runtime as runtime_module
 from flowstash.runtime.wiring.runtime import initialize_runtime, build_worker_runtime
 from flowstash.runtime.worker.runner import build_worker_consumer
 from flowstash.runtime.worker.backends.dramatiq.dramatiq_consumer import DramatiqConsumer
@@ -58,3 +59,16 @@ def test_initialize_runtime_accepts_extra_imports():
     # We just verify it doesn't crash
     rt = initialize_runtime(config, auto_import=["/tmp/non_existent_path_test"])
     assert rt is not None
+
+
+def test_initialize_runtime_prints_flowstash_version(monkeypatch, capsys):
+    monkeypatch.setattr(runtime_module, "_get_flowstash_version", lambda: "9.9.9")
+
+    config = RuntimeConfig(
+        backend=BackendConfig(type=BackendType.ASYNC)
+    )
+
+    initialize_runtime(config)
+
+    captured = capsys.readouterr()
+    assert "Flowstash version: 9.9.9" in captured.out

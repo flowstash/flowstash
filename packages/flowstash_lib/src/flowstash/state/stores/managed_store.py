@@ -41,15 +41,17 @@ class ManagedStateStore:
     ):
         import os
 
-        self._base_url = (base_url or os.environ.get("FLOWSTASH_API_URL", "https://api.flowstash.dev")).rstrip("/")
-        self._api_key = api_key or os.environ.get("flowstash_API_KEY", "")
+        self._base_url = (
+            base_url or os.environ.get("FLOWSTASH_API_URL", "https://api.flowstash.dev")
+        ).rstrip("/")
+        self._api_key = api_key or os.environ.get("FLOWSTASH_API_KEY", "")
         self._timeout = timeout_s
         self._http = http_client or httpx.Client(timeout=timeout_s)
 
     def _headers(self) -> dict:
         h = {"Content-Type": "application/json"}
         if self._api_key:
-            h["Authorization"] = f"Bearer {self._api_key}"
+            h["X-API-Key"] = f"{self._api_key}"
         return h
 
     def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
@@ -57,15 +59,21 @@ class ManagedStateStore:
         last_exc: Optional[Exception] = None
         for attempt in range(self._MAX_RETRIES):
             try:
-                resp = self._http.request(method, url, headers=self._headers(), **kwargs)
+                resp = self._http.request(
+                    method, url, headers=self._headers(), **kwargs
+                )
                 if resp.status_code in (429,) or resp.status_code >= 500:
-                    time.sleep(self._RETRY_DELAY_S * (2 ** attempt))
+                    time.sleep(self._RETRY_DELAY_S * (2**attempt))
                     continue
                 return resp
             except (httpx.TimeoutException, httpx.NetworkError) as exc:
                 last_exc = exc
-                time.sleep(self._RETRY_DELAY_S * (2 ** attempt))
-        raise RuntimeError(f"ManagedStateStore: request failed after {self._MAX_RETRIES} retries") from last_exc
+                time.sleep(self._RETRY_DELAY_S * (2**attempt))
+        params = kwargs.get("params", {})
+        raise RuntimeError(
+            f"ManagedStateStore: request {method} {url}  failed after {self._MAX_RETRIES} retries "
+            f"for params={params}"
+        ) from last_exc
 
     # ------------------------------------------------------------------
     # Protocol implementation
@@ -73,7 +81,9 @@ class ManagedStateStore:
 
     def get_entry(self, namespace: str, key: str) -> Optional[StateEntry]:
         _validate(namespace, key)
-        resp = self._request("GET", "/state", params={"namespace": namespace, "key": key})
+        resp = self._request(
+            "GET", "/state", params={"namespace": namespace, "key": key}
+        )
         if resp.status_code == 404:
             return None
         if resp.status_code == 401 or resp.status_code == 403:
@@ -81,7 +91,7 @@ class ManagedStateStore:
         resp.raise_for_status()
 
         body = resp.json()
-        raw = base64.b64decode(body["value"])
+        raw = base64.b64decode(body.get("value")) if body.get("value") else b""
         return StateEntry(
             value=raw,
             content_type=body.get("content_type", "application/json"),
@@ -131,7 +141,7 @@ class ManagedStateStore:
         resp.raise_for_status()
 
         body = resp.json()
-        stored_raw = base64.b64decode(body["value"])
+        stored_raw = base64.b64decode(body.get("value")) if body.get("value") else b""
         return StateEntry(
             value=stored_raw,
             content_type=body.get("content_type", content_type),
