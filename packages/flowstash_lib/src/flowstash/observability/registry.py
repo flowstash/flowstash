@@ -126,9 +126,36 @@ def configure(config: ObservabilityConfig):
                 "FLOWSTASH_API_URL", "https://api.flowstash.com"
             )
 
-        _events_store = ApiEventsStore(config.managed_api_url, config.managed_api_key)
-        _dx_store = ApiDataExchangeStore(config.managed_api_url, config.managed_api_key)
-        _records_store = ApiRecordsStore(config.managed_api_url, config.managed_api_key)
+        project_id = (
+            config.project_id
+            or os.getenv("MANAGED_PROJECT_ID")
+            or os.getenv("FLOWSTASH_PROJECT_ID")
+        )
+        if not project_id:
+            raise ValueError(
+                "Observability: project_id is required for MANAGED store. "
+                "Set it via observability.projectId in config or the MANAGED_PROJECT_ID / FLOWSTASH_PROJECT_ID env var."
+            )
+        environment = os.getenv("ENVIRONMENT")
+
+        _events_store = ApiEventsStore(
+            config.managed_api_url,
+            config.managed_api_key,
+            project_id=project_id,
+            environment=environment,
+        )
+        _dx_store = ApiDataExchangeStore(
+            config.managed_api_url,
+            config.managed_api_key,
+            project_id=project_id,
+            environment=environment,
+        )
+        _records_store = ApiRecordsStore(
+            config.managed_api_url,
+            config.managed_api_key,
+            project_id=project_id,
+            environment=environment,
+        )
         _blob_store = ApiBlobStore(config.managed_api_url, config.managed_api_key)
 
     elif config.store_type == "gcp":

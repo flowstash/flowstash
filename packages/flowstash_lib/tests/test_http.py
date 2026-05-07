@@ -7,9 +7,9 @@ from flowstash.clients.config import ClientSettings, RetryConfig
 
 @pytest.fixture
 def mock_record_data_exchange():
-    """Mock the record_data_exchange function to verify it gets called."""
+    """Mock _emit_data_exchange on BaseClient to verify it gets called."""
     with patch(
-        "flowstash.clients.http.record_data_exchange", new_callable=AsyncMock
+        "flowstash.clients.base.BaseClient._emit_data_exchange", new_callable=AsyncMock
     ) as mock:
         yield mock
 
@@ -38,7 +38,7 @@ async def test_http_client_records_data_exchange(
     response = await client.request("GET", "/test")
     assert response.status_code == 200
 
-    # Verify record_data_exchange was called
+    # Verify _emit_data_exchange was called
     mock_record_data_exchange.assert_called_once()
 
     # Check the DataExchangeEvent was created with correct info
@@ -70,7 +70,7 @@ async def test_http_client_records_failed_exchange(
     with pytest.raises(httpx.HTTPStatusError):
         await client.request("GET", "/error")
 
-    # Verify record_data_exchange was called with FAILED state
+    # Verify _emit_data_exchange was called with FAILED state
     mock_record_data_exchange.assert_called_once()
     event = mock_record_data_exchange.call_args[0][0]
 
@@ -92,39 +92,38 @@ async def test_http_client_no_otel_imports():
 
 
 def test_mask_sensitive_url_strips_api_key(client_settings):
-    """_mask_sensitive_url replaces sensitive query-param values with ***."""
+    """_mask_url_auth_params replaces auth query-param values."""
     client = HttpClient(name="TEST", settings=client_settings)
 
     url = "https://api.example.com/data?api_key=MY_SECRET&page=2"
-    masked = client._mask_sensitive_url(url)
+    masked = client._mask_url_auth_params(url, {"api_key"})
 
     assert "MY_SECRET" not in masked
-    assert "api_key=***" in masked
     assert "page=2" in masked
 
 
 def test_mask_sensitive_url_no_sensitive_params(client_settings):
-    """_mask_sensitive_url leaves non-sensitive params unchanged."""
+    """_mask_url_auth_params leaves non-auth params unchanged."""
     client = HttpClient(name="TEST", settings=client_settings)
 
     url = "https://api.example.com/data?page=2&size=50"
-    assert client._mask_sensitive_url(url) == url
+    assert client._mask_url_auth_params(url, set()) == url
 
 
 def test_mask_sensitive_url_no_query(client_settings):
-    """_mask_sensitive_url is a no-op when there are no query params."""
+    """_mask_url_auth_params is a no-op when there are no query params."""
     client = HttpClient(name="TEST", settings=client_settings)
 
     url = "https://api.example.com/data"
-    assert client._mask_sensitive_url(url) == url
+    assert client._mask_url_auth_params(url, set()) == url
 
 
 def test_mask_sensitive_url_token_param(client_settings):
-    """Values of params containing 'token' are masked."""
+    """Values of params in _SENSITIVE_PARAM_KEYS are masked even without explicit injection."""
     client = HttpClient(name="TEST", settings=client_settings)
 
     url = "https://api.example.com/data?access_token=supersecret123&foo=bar"
-    masked = client._mask_sensitive_url(url)
+    masked = client._mask_url_auth_params(url, set())
 
     assert "supersecret123" not in masked
     assert "foo=bar" in masked

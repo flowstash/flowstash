@@ -1,14 +1,14 @@
 [project]
 name = "flowstash"
-version = "0.5.7"
+version = "0.6.0"
 description = "Convenience meta-package for the flowstash managed platform."
 authors = [{name = "juraj.bezdek@gmail.com", email = "juraj.bezdek@gmail.com"}]
 requires-python = ">=3.11"
 dependencies = [
-    "flowstash-cli>=0.5.7,<0.6.0",
-    "flowstash-runtime>=0.5.7,<0.6.0",
-    "flowstash-lib>=0.5.7,<0.6.0",
-    "flowstash-clients>=0.5.7,<0.6.0"
+    "flowstash-cli>=0.6.0,<0.7.0",
+    "flowstash-runtime>=0.6.0,<0.7.0",
+    "flowstash-lib>=0.6.0,<0.7.0",
+    "flowstash-clients>=0.6.0,<0.7.0"
 ]
 
 [build-system]

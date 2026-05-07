@@ -35,6 +35,7 @@ class ObservabilityConfig(BaseModel):
     # Managed API settings
     managed_api_url: Optional[str] = Field(None, alias="managedApiUrl")
     managed_api_key: Optional[str] = Field(None, alias="managedApiKey")
+    project_id: Optional[str] = Field(None, alias="projectId")
 
     # Logging settings
     logging: LoggingConfig = Field(default_factory=LoggingConfig)

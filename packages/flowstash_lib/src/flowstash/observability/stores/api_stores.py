@@ -95,19 +95,44 @@ class _AsyncWorker:
         self.join(timeout=5.0)
 
 
+def _enrich_correlation(
+    payload: dict, project_id: Optional[str], environment: Optional[str]
+) -> None:
+    """Inject project_id and environment into the nested correlation dict of a payload."""
+    correlation = payload.get("correlation")
+    if isinstance(correlation, dict):
+        if project_id is not None:
+            correlation["project_id"] = project_id
+        if environment is not None:
+            correlation["environment"] = environment
+
+
 class ApiEventsStore(EventsStore):
-    def __init__(self, api_url: str, api_key: Optional[str] = None):
+    def __init__(
+        self,
+        api_url: str,
+        api_key: Optional[str] = None,
+        *,
+        project_id: Optional[str] = None,
+        environment: Optional[str] = None,
+    ):
         self.worker = _AsyncWorker(api_url, api_key)
+        self._project_id = project_id
+        self._environment = environment
 
     def flush(self, timeout: float = 10.0) -> None:
         """Block until all queued events have been delivered (or timeout expires)."""
         self.worker.join(timeout=timeout)
 
     def write_run_event(self, event: RunEvent) -> None:
-        self.worker.submit("/ingestion/events/run", _to_json_serializable(event))
+        payload = _to_json_serializable(event)
+        _enrich_correlation(payload, self._project_id, self._environment)
+        self.worker.submit("/ingestion/events/run", payload)
 
     def write_span_event(self, event: SpanEvent) -> None:
-        self.worker.submit("/ingestion/events/span", _to_json_serializable(event))
+        payload = _to_json_serializable(event)
+        _enrich_correlation(payload, self._project_id, self._environment)
+        self.worker.submit("/ingestion/events/span", payload)
 
     def write_log(
         self,
@@ -123,18 +148,28 @@ class ApiEventsStore(EventsStore):
             "occurred_at": datetime.utcnow().isoformat(),
             "attrs": attrs or {},
         }
+        _enrich_correlation(payload, self._project_id, self._environment)
         self.worker.submit("/ingestion/logs", payload)
 
 
 class ApiDataExchangeStore(DataExchangeStore):
-    def __init__(self, api_url: str, api_key: Optional[str] = None):
-        # reuse the logic if we want, but for now just use simple client or a shared worker
+    def __init__(
+        self,
+        api_url: str,
+        api_key: Optional[str] = None,
+        *,
+        project_id: Optional[str] = None,
+        environment: Optional[str] = None,
+    ):
         self.api_url = api_url.rstrip("/")
         self.headers = {"X-API-Key": api_key} if api_key else {}
         self.client = httpx.Client(headers=self.headers, timeout=10.0)
+        self._project_id = project_id
+        self._environment = environment
 
     def write_data_exchange(self, dx: DataExchange) -> None:
         payload = _to_json_serializable(dx)
+        _enrich_correlation(payload, self._project_id, self._environment)
         try:
             resp = self.client.post(
                 f"{self.api_url}/ingestion/data-exchanges",
@@ -151,13 +186,26 @@ class ApiDataExchangeStore(DataExchangeStore):
 
 
 class ApiRecordsStore(RecordsStore):
-    def __init__(self, api_url: str, api_key: Optional[str] = None):
+    def __init__(
+        self,
+        api_url: str,
+        api_key: Optional[str] = None,
+        *,
+        project_id: Optional[str] = None,
+        environment: Optional[str] = None,
+    ):
         self.api_url = api_url.rstrip("/")
         self.headers = {"X-API-Key": api_key} if api_key else {}
         self.client = httpx.Client(headers=self.headers, timeout=10.0)
+        self._project_id = project_id
+        self._environment = environment
 
     def write_record_link(self, link: RecordLink) -> None:
         payload = _to_json_serializable(link)
+        if self._project_id is not None:
+            payload["project_id"] = self._project_id
+        if self._environment is not None:
+            payload["environment"] = self._environment
         try:
             resp = self.client.post(
                 f"{self.api_url}/ingestion/records",

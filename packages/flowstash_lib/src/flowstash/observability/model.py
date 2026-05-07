@@ -1,7 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, UTC
-from typing import Optional, Literal, Union
+from typing import Optional, Literal, Union, Dict
 from enum import Enum
 import uuid
 
@@ -14,6 +14,10 @@ class Correlation:
     integration_pipeline: Optional[str] = None
 
     run_id: str = ""  # must be set
+
+    # Project / environment context (injected by the observability store for self-hosted)
+    project_id: Optional[str] = None
+    environment: Optional[str] = None
 
     # Trace context (optional)
     trace_id: Optional[str] = None
@@ -124,6 +128,9 @@ class DataExchange:
     request_payload: Optional[bytes] = None
     response_payload: Optional[bytes] = None
 
+    request_headers: Optional[Dict[str, str]] = None
+    response_headers: Optional[Dict[str, str]] = None
+
     attrs: dict = None
 
 
@@ -186,6 +193,8 @@ class DataExchangeEvent:
     offload_payloads: bool = (
         False  # if True, upload request/response payloads to blob store
     )
+    request_headers: Optional[Dict[str, str]] = None
+    response_headers: Optional[Dict[str, str]] = None
     attrs: dict = field(default_factory=dict)
 
 
@@ -198,6 +207,8 @@ class RecordLinkKind(str, Enum):
 @dataclass(frozen=True)
 class RecordLink:
     tenant_id: str
+    project_id: Optional[str] = None
+    environment: Optional[str] = None
     integration: Optional[str] = None
     pipeline: Optional[str] = None
     run_id: str = ""

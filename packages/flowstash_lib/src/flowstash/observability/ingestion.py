@@ -647,6 +647,8 @@ async def record_data_exchange(
             response_size_bytes=res_size or event.response_size_bytes,
             request_payload=req_payload,
             response_payload=res_payload,
+            request_headers=event.request_headers,
+            response_headers=event.response_headers,
             attrs=event.attrs,
         )
         get_data_exchange_store().write_data_exchange(dx)

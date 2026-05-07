@@ -48,6 +48,18 @@ _SENSITIVE_PARAM_KEYS = frozenset(
     ]
 )
 
+# Header keys whose values are NOT masked in DataExchangeEvents
+_UNMASKED_HEADER_KEYS = frozenset(["content-type"])
+
+
+def _mask_value(val: str) -> str:
+    """Mask a value: show first 3 and last 3 chars, hide the rest.
+    Falls back to *** for short values (<=6 chars).
+    """
+    if not val or len(val) <= 6:
+        return "***"
+    return f"{val[:3]}...{val[-3:]}"
+
 
 def _mask_oauth_payload(data: Dict[str, Any]) -> bytes:
     """Return URL-encoded bytes of *data* with credential values redacted."""
@@ -503,19 +515,19 @@ class HttpClient(BaseClient):
         elif auth_config.type == AuthType.OAUTH2:
             self._auth_manager = OAuth2Manager(auth_config, integration_name=self.name)
 
-    def _mask_sensitive_url(self, url: str) -> str:
-        """Return url with values of sensitive query params replaced by ***."""
+    def _mask_url_auth_params(self, url: str, auth_param_keys: set) -> str:
+        """Return url with values of auth-injected and known-sensitive query params masked."""
+        mask_keys = {k.lower() for k in auth_param_keys} | _SENSITIVE_PARAM_KEYS
         try:
             parsed = urlparse(url)
             if not parsed.query:
                 return url
-            # Use manual split to avoid urlencode re-encoding the *** placeholder
             parts = []
             for pair in parsed.query.split("&"):
                 if "=" in pair:
                     k, v = pair.split("=", 1)
-                    if any(s in k.lower() for s in _SENSITIVE_PARAM_KEYS):
-                        parts.append(f"{k}=***")
+                    if any(s in k.lower() for s in mask_keys):
+                        parts.append(f"{k}={_mask_value(v)}")
                     else:
                         parts.append(pair)
                 else:
@@ -524,18 +536,38 @@ class HttpClient(BaseClient):
         except Exception:
             return url
 
+    def mask_sensitive_data(self, event: DataExchangeEvent) -> DataExchangeEvent:
+        import dataclasses
+
+        def _mask_headers(headers):
+            if not headers:
+                return headers
+            return {
+                k: v if k.lower() in _UNMASKED_HEADER_KEYS else _mask_value(v)
+                for k, v in headers.items()
+            }
+
+        return dataclasses.replace(
+            event,
+            request_headers=_mask_headers(event.request_headers),
+            response_headers=_mask_headers(event.response_headers),
+        )
+
     async def authorize(
         self, headers: Dict[str, str], params: Dict[str, Any], cookies: Dict[str, str]
-    ) -> None:
+    ) -> set:
+        """Apply auth in-place. Returns set of query-param keys injected (for masking)."""
         if not self.settings.auth:
-            return
+            return set()
 
+        injected_param_keys: set = set()
         auth = self.settings.auth
         if auth.type == AuthType.API_KEY:
             if auth.in_ == ApiKeyLocation.HEADER:
                 headers[auth.key] = auth.value
             elif auth.in_ == ApiKeyLocation.QUERY:
                 params[auth.key] = auth.value
+                injected_param_keys.add(auth.key)
         elif auth.type == AuthType.OAUTH2 and self._auth_manager:
             token = await self._auth_manager.get_token(self.client)
             headers["Authorization"] = f"Bearer {token}"
@@ -543,6 +575,7 @@ class HttpClient(BaseClient):
             pass  # Handled by client.auth
         else:
             raise ValueError(f"Unsupported auth type: {auth.type}")
+        return injected_param_keys
 
     async def request(
         self,
@@ -572,12 +605,16 @@ class HttpClient(BaseClient):
 
         # Additional Auth Handling
         try:
-            await self.authorize(headers, params, cookies)
+            injected_param_keys = await self.authorize(headers, params, cookies)
         except Exception as auth_exc:
             logger.error(
                 f"Authorization failed for {self.name} [{method} {url}]: {auth_exc}"
             )
             raise
+
+        # Snapshot request headers after auth injection; build masked address
+        req_headers_snapshot = dict(headers)
+        masked_address = self._mask_url_auth_params(url, injected_param_keys)
 
         # Observability: Extract Request Payload
         req_content_type = headers.get("Content-Type")
@@ -663,13 +700,13 @@ class HttpClient(BaseClient):
                 end_time = datetime.now(UTC)
                 state = "SUCCEEDED" if not response.is_error else "FAILED"
 
-                await record_data_exchange(
+                await self._emit_data_exchange(
                     DataExchangeEvent(
                         integration=self.settings.client_id,
                         channel="HTTP",
                         operation=f"{method} {path}",
                         remote_system=self.base_url,
-                        address=self._mask_sensitive_url(url),
+                        address=masked_address,
                         occurred_at=start_time,
                         completed_at=end_time,
                         state=state,
@@ -680,6 +717,8 @@ class HttpClient(BaseClient):
                         response_content_type=resp_content_type,
                         request_payload=req_body_bytes,
                         request_content_type=req_content_type,
+                        request_headers=req_headers_snapshot,
+                        response_headers=dict(response.headers),
                         offload_payloads=files is not None,
                     ),
                     correlation=None,
@@ -727,13 +766,13 @@ class HttpClient(BaseClient):
                 # FINAL FAILURE - Observability: TIMEOUT/FAILED
                 end_time = datetime.now(UTC)
 
-                await record_data_exchange(
+                await self._emit_data_exchange(
                     DataExchangeEvent(
                         integration=self.settings.client_id,
                         channel="HTTP",
                         operation=f"{method} {path}",
                         remote_system=self.base_url,
-                        address=self._mask_sensitive_url(url),
+                        address=masked_address,
                         occurred_at=start_time,
                         completed_at=end_time,
                         state=(
@@ -746,6 +785,7 @@ class HttpClient(BaseClient):
                         attrs={"error": str(e)},
                         request_payload=req_body_bytes,
                         request_content_type=req_content_type,
+                        request_headers=req_headers_snapshot,
                     ),
                     correlation=None,
                 )
