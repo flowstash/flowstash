@@ -3,6 +3,7 @@ import logging
 import threading
 import uuid
 import concurrent.futures
+import time
 from datetime import datetime, UTC
 from typing import Callable, Coroutine, Optional, Any, Dict
 
@@ -61,6 +62,7 @@ class AsyncManager:
             max_workers=max_workers
         )
         self._pending: list[concurrent.futures.Future] = []
+        self._io_pending: list[concurrent.futures.Future] = []
         self._lock = threading.Lock()
 
     @classmethod
@@ -69,13 +71,46 @@ class AsyncManager:
             cls._instance = AsyncManager()
         return cls._instance
 
-    def _submit(self, fn: Callable) -> concurrent.futures.Future:
+    def _submit(self, fn: Callable) -> Optional[concurrent.futures.Future]:
         """Submit fn to executor and track the future for flush()."""
-        future = self._executor.submit(fn)
         with self._lock:
             self._pending = [f for f in self._pending if not f.done()]
+            try:
+                future = self._executor.submit(fn)
+            except RuntimeError as e:
+                logger.debug("Observability job suppressed during shutdown: %s", e)
+                return None
             self._pending.append(future)
         return future
+
+    def _submit_io(self, fn: Callable) -> Optional[concurrent.futures.Future]:
+        """Submit store IO and track it without using loop-owned background tasks."""
+        with self._lock:
+            self._io_pending = [f for f in self._io_pending if not f.done()]
+            try:
+                future = self._io_executor.submit(fn)
+            except RuntimeError as e:
+                logger.debug("Observability IO job suppressed during shutdown: %s", e)
+                return None
+            self._io_pending.append(future)
+        return future
+
+    def _wait_for_tracked(
+        self, attr: str, deadline: float
+    ) -> list[concurrent.futures.Future]:
+        """Wait for all currently tracked futures on attr until deadline."""
+        while True:
+            with self._lock:
+                pending = [f for f in getattr(self, attr) if not f.done()]
+                setattr(self, attr, pending)
+            if not pending:
+                return []
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return pending
+
+            concurrent.futures.wait(pending, timeout=remaining)
 
     def flush(self, timeout: float = 10.0) -> None:
         """Block until all pending observability work completes (or timeout expires).
@@ -87,25 +122,21 @@ class AsyncManager:
 
         Safe to call from any thread (sync). Called during graceful shutdown.
         """
-        # Level 1: wait for lifecycle trampoline threads
-        with self._lock:
-            pending = list(self._pending)
-        if pending:
-            concurrent.futures.wait(pending, timeout=timeout)
-        with self._lock:
-            self._pending.clear()
+        deadline = time.monotonic() + timeout
 
-        # Level 2: wait for any outstanding _io_executor jobs (store writes)
-        self._io_executor.shutdown(wait=True, cancel_futures=False)
-        self._io_executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=self._max_workers
-        )
+        # Level 1: wait for lifecycle trampoline threads
+        self._wait_for_tracked("_pending", deadline)
+
+        # Level 2: wait for outstanding store writes without shutting the executor down.
+        # flush() is also used after individual Cloud Run requests, so tearing the pool
+        # down here races with other in-flight eventual writes.
+        self._wait_for_tracked("_io_pending", deadline)
 
         # Level 3: drain the store's own internal queue (e.g. HTTP delivery queue)
         try:
             store = get_events_store()
             if hasattr(store, "flush"):
-                store.flush(timeout=timeout)
+                store.flush(timeout=max(0.0, deadline - time.monotonic()))
         except Exception:
             pass
 
@@ -123,13 +154,12 @@ class AsyncManager:
 
         if _config.durability == DurabilityMode.IMMEDIATE:
             # Await the execution in the thread pool
-            await loop.run_in_executor(self._io_executor, _job)
+            future = self._submit_io(_job)
+            if future is not None:
+                await asyncio.wrap_future(future, loop=loop)
         else:
-            # EVENTUAL: Fire and forget task that wraps calculation
-            async def _background():
-                await loop.run_in_executor(self._io_executor, _job)
-
-            asyncio.create_task(_background())
+            # EVENTUAL: submit directly so flush() can track the actual store write.
+            self._submit_io(_job)
 
     def execute_fire_and_forget(self, func, *args, **kwargs):
         """Execute a blocking function in the thread pool. Tracked by flush()."""

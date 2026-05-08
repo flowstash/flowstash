@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 from datetime import datetime
 from flowstash.context import integration_context
 from flowstash.observability.ingestion import (
+    AsyncManager,
     record_run_started,
     record_run_ended,
     record_log,
@@ -68,6 +69,18 @@ async def testrecord__started_eventual(mock_stores):
     # Wait for background task
     await asyncio.sleep(0.1)
     events_store.write_run_event.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_eventual_execute_flush_waits_for_store_write():
+    set_observability_config(ObservabilityConfig(durability=DurabilityMode.EVENTUAL))
+    manager = AsyncManager(max_workers=1)
+    calls = []
+
+    await manager.execute(lambda: calls.append("ran"))
+    manager.flush(timeout=1.0)
+
+    assert calls == ["ran"]
 
 
 @pytest.mark.asyncio

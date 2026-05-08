@@ -36,5 +36,6 @@ class BaseClient:
         record_data_exchange directly.
         """
         from flowstash.observability.ingestion import record_data_exchange
+
         masked = self.mask_sensitive_data(event)
         await record_data_exchange(masked, correlation)
