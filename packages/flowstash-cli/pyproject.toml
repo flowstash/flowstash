@@ -1,11 +1,11 @@
 [project]
 name = "flowstash-cli"
-version = "0.6.3"
+version = "0.6.4"
 description = "CLI for the flowstash Managed Platform"
 authors = [{name = "juraj.bezdek@gmail.com", email = "juraj.bezdek@gmail.com"}]
 requires-python = ">=3.11"
 dependencies = [
-    "flowstash-runtime>=0.6.3,<0.7.0",
+    "flowstash-runtime>=0.6.4,<0.7.0",
     "typer[all]>=0.12.0",
     "httpx>=0.27.0",
     "pyyaml>=6.0.1",
