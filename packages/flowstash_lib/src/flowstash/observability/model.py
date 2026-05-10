@@ -67,6 +67,7 @@ class TaskDelegationMetadata:
 class Run:
     correlation: Correlation
     scheduled_job_id: Optional[str] = None
+    entry_point: Optional[str] = None
 
     artifact_id: Optional[str] = None
     env_snapshot_id: Optional[str] = None
@@ -143,12 +144,14 @@ class RunEvent:
     correlation: Correlation
     occurred_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     scheduled_job_id: Optional[str] = None
+    entry_point: Optional[str] = None
 
     # Optional fields depending on event type
     artifact_id: Optional[str] = None
     env_snapshot_id: Optional[str] = None
     status: str = "RUNNING"
     attrs: dict = field(default_factory=dict)
+    metadata: dict = field(default_factory=dict)
     finished_at: Optional[datetime] = (
         None  # Specific for ENDED if needed, or just use occurred_at
     )
@@ -168,6 +171,7 @@ class SpanEvent:
     end_time: Optional[datetime] = None
     error_summary: Optional[str] = None
     attrs: dict = field(default_factory=dict)
+    metadata: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

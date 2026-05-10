@@ -205,6 +205,28 @@ def _get_correlation(correlation: Optional[Correlation] = None) -> Correlation:
     return Correlation()
 
 
+def normalize_arguments(func: Callable, args: tuple, kwargs: dict) -> dict:
+    """Merge positional and keyword arguments into a single dict using function signature."""
+    try:
+        # Avoid circular import by importing inspect here if not already available
+        import inspect
+
+        # Unwrap if it's a TaskWrapper or similar
+        target = func
+        if hasattr(func, "func"):
+            target = func.func
+
+        sig = inspect.signature(target)
+        bound = sig.bind(*args, **kwargs)
+        bound.apply_defaults()
+        return dict(bound.arguments)
+    except Exception:
+        # Fallback if signature binding fails OR if it's not a function (e.g. Mock)
+        res = {f"arg_{i}": v for i, v in enumerate(args)}
+        res.update(kwargs)
+        return res
+
+
 # --- Run Events ---
 
 
@@ -215,11 +237,15 @@ async def record_run_started(
     started_at: Optional[datetime] = None,
     status: str = "RUNNING",
     scheduled_job_id: Optional[str] = None,
+    entry_point: Optional[str] = None,
     attrs: Optional[Dict[str, Any]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
 ):
     corr = _get_correlation(correlation)
     ctx = current_context()
     run_attrs = {**(attrs or {})}
+    run_metadata = {**(metadata or {})}
+
     if not run_attrs.get("fw.record_key") and ctx and ctx.current_record_key:
         run_attrs["fw.record_key"] = ctx.current_record_key
 
@@ -228,10 +254,12 @@ async def record_run_started(
         correlation=corr,
         occurred_at=started_at or datetime.now(UTC),
         scheduled_job_id=scheduled_job_id,
+        entry_point=entry_point,
         artifact_id=artifact_id,
         env_snapshot_id=env_snapshot_id,
         status=status,
         attrs=run_attrs,
+        metadata=run_metadata,
     )
     await AsyncManager.get_instance().execute(get_events_store().write_run_event, event)
 
@@ -254,10 +282,12 @@ async def record_run_ended(
     finished_at: Optional[datetime] = None,
     scheduled_job_id: Optional[str] = None,
     attrs: Optional[Dict[str, Any]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
 ):
     corr = _get_correlation(correlation)
     ctx = current_context()
     run_attrs = {**(attrs or {})}
+    run_metadata = {**(metadata or {})}
     if not run_attrs.get("fw.record_key") and ctx and ctx.current_record_key:
         run_attrs["fw.record_key"] = ctx.current_record_key
 
@@ -269,6 +299,7 @@ async def record_run_ended(
         scheduled_job_id=scheduled_job_id,
         status=status,
         attrs=run_attrs,
+        metadata=run_metadata,
     )
     await AsyncManager.get_instance().execute(get_events_store().write_run_event, event)
 
@@ -303,10 +334,12 @@ async def record_span_started(
     status: str = "STARTED",
     start_time: Optional[datetime] = None,
     attrs: Optional[Dict[str, Any]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
 ):
     corr = _get_correlation(correlation)
     ctx = current_context()
     span_attrs = {**(attrs or {})}
+    span_metadata = {**(metadata or {})}
     if not span_attrs.get("fw.record_key") and ctx and ctx.current_record_key:
         span_attrs["fw.record_key"] = ctx.current_record_key
 
@@ -318,6 +351,7 @@ async def record_span_started(
         status=status,
         start_time=start_time,
         attrs=span_attrs,
+        metadata=span_metadata,
     )
     await AsyncManager.get_instance().execute(
         get_events_store().write_span_event, event
@@ -351,10 +385,12 @@ async def record_span_ended(
     start_time: Optional[datetime] = None,
     end_time: Optional[datetime] = None,
     attrs: Optional[Dict[str, Any]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
 ):
     corr = _get_correlation(correlation)
     ctx = current_context()
     span_attrs = {**(attrs or {})}
+    span_metadata = {**(metadata or {})}
     if not span_attrs.get("fw.record_key") and ctx and ctx.current_record_key:
         span_attrs["fw.record_key"] = ctx.current_record_key
 
@@ -368,6 +404,7 @@ async def record_span_ended(
         start_time=start_time,
         end_time=end_time or datetime.now(UTC),
         attrs=span_attrs,
+        metadata=span_metadata,
     )
     await AsyncManager.get_instance().execute(
         get_events_store().write_span_event, event

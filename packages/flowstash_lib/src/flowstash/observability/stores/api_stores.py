@@ -48,12 +48,15 @@ class _AsyncWorker:
         self.headers = {"X-API-Key": api_key}
         self._queue = queue.Queue(maxsize=10000)
         self._shutdown = False
+        import concurrent.futures
+
+        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
         self._worker_thread = threading.Thread(target=self._run, daemon=True)
         self._worker_thread.start()
         atexit.register(self.shutdown)
 
     def _run(self):
-        with httpx.Client(headers=self.headers, timeout=10.0) as client:
+        with httpx.Client(headers=self.headers, timeout=30.0) as client:
             while not self._shutdown or not self._queue.empty():
                 try:
                     task = self._queue.get(timeout=0.1)  # @IgnoreException
@@ -61,20 +64,24 @@ class _AsyncWorker:
                     continue
 
                 endpoint, payload = task
-                try:
-                    resp = client.post(f"{self.api_url}{endpoint}", json=payload)
-                    resp.raise_for_status()
-                except Exception as e:
-                    logger.warning(
-                        "Observability: failed to POST to %s%s — %s. Payload: %s. "
-                        "Check that managed_api_url is correct and the managed API is running.",
-                        self.api_url,
-                        endpoint,
-                        e,
-                        payload,
-                    )
-                finally:
-                    self._queue.task_done()
+
+                def _do_post(ep, pl):
+                    try:
+                        resp = client.post(f"{self.api_url}{ep}", json=pl)
+                        resp.raise_for_status()
+                    except Exception as e:
+                        logger.warning(
+                            "Observability: failed to POST to %s%s — %s. Payload: %s. "
+                            "Check that managed_api_url is correct and the managed API is running.",
+                            self.api_url,
+                            ep,
+                            e,
+                            pl,
+                        )
+                    finally:
+                        self._queue.task_done()
+
+                self._executor.submit(_do_post, endpoint, payload)
 
     def submit(self, endpoint: str, payload: Any):
         if self._shutdown:
@@ -93,6 +100,10 @@ class _AsyncWorker:
     def shutdown(self):
         self._shutdown = True
         self.join(timeout=5.0)
+        try:
+            self._executor.shutdown(wait=False)
+        except Exception:
+            pass
 
 
 def _enrich_correlation(
@@ -163,7 +174,7 @@ class ApiDataExchangeStore(DataExchangeStore):
     ):
         self.api_url = api_url.rstrip("/")
         self.headers = {"X-API-Key": api_key} if api_key else {}
-        self.client = httpx.Client(headers=self.headers, timeout=10.0)
+        self.client = httpx.Client(headers=self.headers, timeout=30.0)
         self._project_id = project_id
         self._environment = environment
 

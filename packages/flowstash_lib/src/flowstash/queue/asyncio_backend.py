@@ -3,6 +3,7 @@ import uuid
 from typing import Any, Callable, Optional, Mapping, List, Union
 from .backend import TaskBackend, JobHandle, Schedule
 from ..context import IntegrationContext, current_context, integration_context
+from ..observability.ingestion import normalize_arguments
 import logging
 
 
@@ -74,6 +75,7 @@ class AsyncioBackend:
             token = _ctx_var.set(None)
             try:
                 with integration_context(
+                    span_name=func.__name__,
                     integration=integration or (ctx.integration if ctx else None),
                     integration_pipeline=pipeline
                     or (ctx.integration_pipeline if ctx else None),
@@ -81,6 +83,7 @@ class AsyncioBackend:
                     tags={**(ctx.tags if ctx else {}), **(tags or {})},
                     parent_run_id=parent_run_id,
                     operation_id=operation_id,
+                    attrs={"args": normalize_arguments(func, args, kwargs)},
                 ):
                     if asyncio.iscoroutinefunction(func):
                         return await func(*args, **kwargs)

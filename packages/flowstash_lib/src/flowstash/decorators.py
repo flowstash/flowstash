@@ -11,6 +11,7 @@ from .observability.ingestion import (
     _enqueue_lifecycle,
     record_span_started,
     record_span_ended,
+    normalize_arguments,
 )
 
 
@@ -50,12 +51,15 @@ def integration_step(
             effective_span_name = name or func.__name__
             tracer = get_tracer()
             otel_span_name = effective_span_name
+            normalized_args = normalize_arguments(func, args, kwargs)
 
             with integration_context(
                 integration=integration,
                 integration_pipeline=integration_pipeline,
                 span_name=effective_span_name,
                 tags=tags,
+                attrs={"args": normalized_args},
+                metadata={"fw.span_kind": "step"},
             ):
                 ctx = current_context()
 
@@ -67,6 +71,7 @@ def integration_step(
                         "fw.run_id": ctx.run_id,
                         "code.function": func.__name__,
                         **{f"tag.{k}": v for k, v in ctx.tags.items()},
+                        **{f"arg.{k}": str(v) for k, v in normalized_args.items()},
                     },
                 ):
                     if inspect.iscoroutinefunction(func):
@@ -79,12 +84,15 @@ def integration_step(
             tracer = get_tracer()
             effective_span_name = name or func.__name__
             otel_span_name = effective_span_name
+            normalized_args = normalize_arguments(func, args, kwargs)
 
             with integration_context(
                 integration=integration,
                 integration_pipeline=integration_pipeline,
                 span_name=effective_span_name,
                 tags=tags,
+                attrs={"args": normalized_args},
+                metadata={"fw.span_kind": "step"},
             ):
                 ctx = current_context()
 
@@ -96,6 +104,7 @@ def integration_step(
                         "fw.run_id": ctx.run_id,
                         "code.function": func.__name__,
                         **{f"tag.{k}": v for k, v in ctx.tags.items()},
+                        **{f"arg.{k}": str(v) for k, v in normalized_args.items()},
                     },
                 ):
                     return func(*args, **kwargs)
@@ -134,12 +143,15 @@ class TaskWrapper:
             or self.func.__name__
         )
         otel_span_name = effective_span_name
+        normalized_args = normalize_arguments(self.func, args, kwargs)
 
         with integration_context(
             integration=self.metadata["integration"],
             integration_pipeline=self.metadata["pipeline"],
             span_name=effective_span_name,
             tags=self.metadata.get("tags"),
+            attrs={"args": normalized_args},
+            metadata={"fw.span_kind": "task"},
         ):
             ctx = current_context()
 
@@ -151,6 +163,7 @@ class TaskWrapper:
                     "fw.run_id": ctx.run_id,
                     "code.function": self.func.__name__,
                     **{f"tag.{k}": v for k, v in ctx.tags.items()},
+                    **{f"arg.{k}": str(v) for k, v in normalized_args.items()},
                 },
             ):
                 if inspect.iscoroutinefunction(self.func):
@@ -176,6 +189,7 @@ class TaskWrapper:
         operation_id = str(uuid.uuid4())
         span_name = f"delegate:{target_task}"
         start_time = datetime.now(UTC)
+        normalized_args = normalize_arguments(self.func, args, kwargs)
 
         delegation = TaskDelegationMetadata(
             parent_run_id=ctx.run_id,
@@ -184,19 +198,20 @@ class TaskWrapper:
             schedule_time=schedule_time,
         )
 
-        span_attrs: dict = {
+        span_metadata: dict = {
             "fw.span_kind": "delegation",
             "fw.operation_id": operation_id,
             "fw.target_task": target_task,
         }
         if schedule_time is not None:
-            span_attrs["fw.schedule_time"] = schedule_time.isoformat()
+            span_metadata["fw.schedule_time"] = schedule_time.isoformat()
 
         _enqueue_lifecycle(
             record_span_started,
             name=span_name,
             correlation=ctx.corelation,
-            attrs=span_attrs,
+            attrs={"args": normalized_args},
+            metadata=span_metadata,
         )
 
         try:
@@ -231,7 +246,7 @@ class TaskWrapper:
                 status="ERROR",
                 start_time=start_time,
                 end_time=datetime.now(UTC),
-                attrs={**span_attrs, "fw.outcome": "ERROR"},
+                metadata={**span_metadata, "fw.outcome": "ERROR"},
             )
             raise
 
@@ -242,8 +257,8 @@ class TaskWrapper:
             status="DELEGATED",
             start_time=start_time,
             end_time=datetime.now(UTC),
-            attrs={
-                **span_attrs,
+            metadata={
+                **span_metadata,
                 "fw.outcome": "DELEGATED",
                 "fw.accepted_id": handle.id if handle else None,
             },
@@ -255,10 +270,12 @@ class TaskWrapper:
         ctx = current_context()
         if ctx is None:
             # No active run: open a short-lived root run scoped to this delegation call.
+            normalized_args = normalize_arguments(self.func, args, kwargs)
             with integration_context(
                 integration=self.metadata["integration"],
                 integration_pipeline=self.metadata["pipeline"],
                 tags=self.metadata.get("tags") or {},
+                attrs={"args": normalized_args},
             ):
                 return self._emit_delegation_span_and_call_backend(
                     current_context(), args, kwargs
@@ -280,10 +297,12 @@ class TaskWrapper:
 
         ctx = current_context()
         if ctx is None:
+            normalized_args = normalize_arguments(self.func, args, kwargs)
             with integration_context(
                 integration=self.metadata["integration"],
                 integration_pipeline=self.metadata["pipeline"],
                 tags=self.metadata.get("tags") or {},
+                attrs={"args": normalized_args},
             ):
                 return self._emit_delegation_span_and_call_backend(
                     current_context(),

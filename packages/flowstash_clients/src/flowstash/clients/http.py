@@ -260,7 +260,7 @@ class OAuth2Manager:
 
             except httpx.HTTPStatusError:
                 raise
-            except (httpx.ConnectError, httpx.TimeoutException) as e:
+            except (httpx.ConnectError, httpx.ReadError, httpx.TimeoutException) as e:
                 completed_at = datetime.now(UTC)
                 state = "TIMEOUT" if isinstance(e, httpx.TimeoutException) else "FAILED"
                 last_exc = e
@@ -497,9 +497,13 @@ class HttpClient(BaseClient):
         """
         Calculates the full URL for the request.
         If path is empty or ".", it uses the base_url without forced trailing slash.
+        If path contains "://", it's treated as a full URL and returned as is.
         """
         if not path or path == ".":
             return self.settings.base_url
+
+        if "://" in path:
+            return path
 
         # httpx-style join: Ensure base ends with / and path doesn't start with /
         base = self.base_url
@@ -739,7 +743,7 @@ class HttpClient(BaseClient):
 
             except httpx.HTTPStatusError:
                 raise
-            except (httpx.ConnectError, httpx.TimeoutException) as e:
+            except (httpx.ConnectError, httpx.ReadError, httpx.TimeoutException) as e:
                 # Generate curl command for debugging
                 curl_cmd = self._to_curl_command(
                     method,

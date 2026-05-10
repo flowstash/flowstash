@@ -11,11 +11,19 @@ class Ingress:
     def __init__(self):
         self._webhooks: List[Callable] = []
 
-    def webhook(self, pipeline: str, integration: str, path: str, method: str = "POST", test_payload: Optional[Any] = None):
+    def webhook(
+        self,
+        pipeline: str,
+        integration: str,
+        path: str,
+        method: str = "POST",
+        test_payload: Optional[Any] = None,
+    ):
         """
         Metadata-only decorator for webhook handlers.
         Registers the handler in a shared registry for discovery.
         """
+
         def decorator(func: Callable):
             source_locator = None
             try:
@@ -27,7 +35,9 @@ class Ingress:
                     "file": source_file,
                     "line": start_line,
                     "name": target_func.__name__,
-                    "qualname": getattr(target_func, "__qualname__", target_func.__name__),
+                    "qualname": getattr(
+                        target_func, "__qualname__", target_func.__name__
+                    ),
                     "module": target_func.__module__,
                 }
             except Exception:
@@ -46,14 +56,21 @@ class Ingress:
             setattr(func, "_ingress_metadata", metadata)
             self._webhooks.append(func)
             return func
+
         return decorator
 
     def get_webhooks(self) -> List[Callable]:
         """Return all registered webhook handlers."""
         return self._webhooks
 
-
-    def poll(self, pipeline: str, integration: str, schedule: Union[str, "Schedule"], name: Optional[str] = None, tags: Optional[Dict[str, Any]] = None):
+    def poll(
+        self,
+        pipeline: str,
+        integration: str,
+        schedule: Union[str, "Schedule"],
+        name: Optional[str] = None,
+        tags: Optional[Dict[str, Any]] = None,
+    ):
         """
         Scheduler entrypoint for polling.
         Behaves as a specialized integration_task that manages state.
@@ -65,19 +82,23 @@ class Ingress:
         def decorator(func: Callable):
             ingress_name = name or func.__name__
 
-            actual_schedule = Schedule(cron=schedule) if isinstance(schedule, str) else schedule
+            actual_schedule = (
+                Schedule(cron=schedule) if isinstance(schedule, str) else schedule
+            )
 
             @functools.wraps(func)
             async def state_wrapper(*args, **kwargs):
                 with integration_context(
                     integration=integration,
                     integration_pipeline=pipeline,
-                    ingress_name=ingress_name
+                    ingress_name=ingress_name,
                 ):
                     ctx = current_context()
                     if not ctx:
                         # Should not happen as we just created/joined one
-                        raise RuntimeError("ingress.poll must run within an integration context")
+                        raise RuntimeError(
+                            "ingress.poll must run within an integration context"
+                        )
 
                     # 1. Load state
                     state = State.get(ingress_name, scope="ingress") or {}
@@ -96,34 +117,42 @@ class Ingress:
                     State.set(ingress_name, state, scope="ingress")
                     return result
 
-            tw = TaskWrapper(state_wrapper, {
-                "integration": integration,
-                "pipeline": pipeline,
-                "name": ingress_name,
-                "default_schedule": actual_schedule,
-                "tags": tags,
-            })
+            tw = TaskWrapper(
+                state_wrapper,
+                {
+                    "integration": integration,
+                    "pipeline": pipeline,
+                    "name": ingress_name,
+                    "default_schedule": actual_schedule,
+                    "tags": tags,
+                },
+            )
 
             # Attach metadata for discovery
-            setattr(tw, "_ingress_metadata", {
-                "kind": "poll",
-                "pipeline": pipeline,
-                "integration": integration,
-                "schedule": actual_schedule,
-                "name": ingress_name,
-                "tags": tags,
-            })
+            setattr(
+                tw,
+                "_ingress_metadata",
+                {
+                    "kind": "poll",
+                    "pipeline": pipeline,
+                    "integration": integration,
+                    "schedule": actual_schedule,
+                    "name": ingress_name,
+                    "tags": tags,
+                },
+            )
 
             return tw
+
         return decorator
-
-
 
 
 class FromFile:
     """Helper to specify a test payload loaded from a local JSON fixture."""
+
     def __init__(self, path: str):
         self.path = path
+
 
 ingress = Ingress()
 
@@ -131,4 +160,3 @@ ingress = Ingress()
 webhook = ingress.webhook
 poll = ingress.poll
 get_webhooks = ingress.get_webhooks
-

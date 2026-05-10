@@ -15,6 +15,7 @@ from opentelemetry import trace, baggage
 from flowstash.observability.ingestion import (
     record_run_started,
     record_run_ended,
+    normalize_arguments,
 )
 
 
@@ -359,6 +360,12 @@ class FrameworkContextMiddleware(dramatiq.Middleware):
         parent_run_id = headers.get("fw.parent_run_id")
         operation_id = headers.get("fw.operation_id")
 
+        # Resolve args/kwargs for normalization
+        args = message.args
+        kwargs = message.kwargs
+        actor_fn = message.actor.fn
+        normalized_args = normalize_arguments(actor_fn, args, kwargs)
+
         # Create a fresh execution context: new run_id allocated by integration_context.
         # record_lifecycle=False because this middleware records STARTED/ENDED explicitly
         # below — prevents double-recording.
@@ -369,12 +376,14 @@ class FrameworkContextMiddleware(dramatiq.Middleware):
             tags=tags,
             parent_run_id=parent_run_id,
             operation_id=operation_id,
+            attrs={"args": normalized_args},
             record_lifecycle=False,
         )
         ctx = ctx_mgr.__enter__()
 
         self.local.ctx_mgr = ctx_mgr
         self.local.ctx = ctx
+        self.local.normalized_args = normalized_args
 
         self.local.scheduled_job_id = scheduled_job_id
         self.local.span_name = f"task.execute:{message.actor_name}"
@@ -388,6 +397,8 @@ class FrameworkContextMiddleware(dramatiq.Middleware):
             record_run_started(
                 correlation=self.local.ctx.corelation,
                 scheduled_job_id=getattr(self.local, "scheduled_job_id", None),
+                entry_point=getattr(self.local, "span_name", None),
+                attrs={"args": self.local.normalized_args},
             )
         )
 

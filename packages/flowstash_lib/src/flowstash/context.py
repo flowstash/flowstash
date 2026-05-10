@@ -119,6 +119,8 @@ class integration_context:
             "ingress_name": ingress_name,
             "parent_run_id": parent_run_id,
             "operation_id": operation_id,
+            "attrs": kwargs.pop("attrs", None),
+            "metadata": kwargs.pop("metadata", None),
             **kwargs,
         }
 
@@ -204,7 +206,14 @@ class integration_context:
         if self._record_lifecycle:
             corr = ctx.corelation
             if self._is_root_run:
-                _enqueue_lifecycle(record_run_started, correlation=corr)
+                entry_point = self.span_name
+                _enqueue_lifecycle(
+                    record_run_started,
+                    correlation=corr,
+                    entry_point=entry_point,
+                    attrs=self.overrides.get("attrs"),
+                    metadata=self.overrides.get("metadata"),
+                )
             else:
                 name = (
                     self.span_name
@@ -218,6 +227,8 @@ class integration_context:
                     name=name,
                     correlation=corr,
                     start_time=self._start_time,
+                    attrs=self.overrides.get("attrs"),
+                    metadata=self.overrides.get("metadata"),
                 )
 
         # Automatically bind State if possible (to avoid circular imports, we do it carefully)
@@ -242,9 +253,18 @@ class integration_context:
             corr = self._last_ctx.corelation
             if self._is_root_run:
                 status = "FAILED" if exc_type else "SUCCEEDED"
-                _enqueue_lifecycle(record_run_ended, status=status, correlation=corr)
+                base_meta = dict(self.overrides.get("metadata") or {})
+                base_meta["fw.outcome"] = status
+                _enqueue_lifecycle(
+                    record_run_ended,
+                    status=status,
+                    correlation=corr,
+                    metadata=base_meta,
+                )
             elif self._recorded_span_name:
                 status = "ERROR" if exc_type else "OK"
+                base_meta = dict(self.overrides.get("metadata") or {})
+                base_meta["fw.outcome"] = status
                 _enqueue_lifecycle(
                     record_span_ended,
                     name=self._recorded_span_name,
@@ -253,6 +273,8 @@ class integration_context:
                     start_time=self._start_time,
                     end_time=datetime.now(UTC),
                     error_summary=str(exc_val) if exc_val else None,
+                    attrs=self.overrides.get("attrs"),
+                    metadata=base_meta,
                 )
         if self.state_token:
             _state_handle.reset(self.state_token)

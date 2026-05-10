@@ -27,6 +27,7 @@ from flowstash.context import integration_context
 from flowstash.observability.ingestion import (
     record_run_started,
     record_run_ended,
+    normalize_arguments,
 )
 from flowstash.queue.backend import get_backend
 
@@ -140,7 +141,7 @@ def _get_drain_controller(request: Request) -> ManagedTaskDrainController:
     return controller
 
 
-async def _flush_observability(timeout_s: float = 5.0) -> None:
+async def _flush_observability(timeout_s: float = 15.0) -> None:
     import asyncio
     from flowstash.observability.ingestion import AsyncManager
 
@@ -192,15 +193,22 @@ async def _execute_managed_task(payload: TaskPayload, func_ref: str, func: Any) 
 
     status_result = "SUCCEEDED"
 
+    normalized_args = normalize_arguments(func, payload.args, payload.kwargs)
+
     with integration_context(
         integration=integration,
         integration_pipeline=pipeline,
         parent_run_id=parent_run_id,
         operation_id=operation_id,
         tags=tags,
+        attrs={"args": normalized_args},
         record_lifecycle=False,
     ) as ctx:
-        await record_run_started(correlation=ctx.corelation)
+        await record_run_started(
+            correlation=ctx.corelation,
+            entry_point=payload.task_name or func_ref,
+            attrs={"args": normalized_args},
+        )
 
         try:
             await _invoke_task_callable(func, payload.args, payload.kwargs)
