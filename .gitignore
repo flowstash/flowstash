@@ -16,3 +16,4 @@ logs/
 *.key
 *.crt
 _*.md
+*_plan.md

@@ -13,7 +13,12 @@ from flowstash.observability.ingestion import (
     record_data_exchange,
     set_observability_config,
 )
-from flowstash.observability.model import Correlation, RunEvent, SpanEvent, DataExchangeEvent
+from flowstash.observability.model import (
+    Correlation,
+    RunEvent,
+    SpanEvent,
+    DataExchangeEvent,
+)
 from flowstash.config.observability_config import ObservabilityConfig, DurabilityMode
 from flowstash.observability import registry
 
@@ -266,9 +271,12 @@ async def test_run_started_attrs_default_to_empty(mock_stores):
 
 
 @pytest.mark.asyncio
-async def test_decorator_step_stores_args_in_attrs_and_span_kind_in_metadata(mock_stores):
+async def test_decorator_step_stores_args_in_attrs_and_span_kind_in_metadata(
+    mock_stores,
+):
     """@integration_step should put args in attrs and fw.span_kind in metadata.
-    Must run inside an outer context so integration_context records a span (not a root run)."""
+    Must run inside an outer context so integration_context records a span (not a root run).
+    """
     from flowstash.decorators import integration_step
 
     events_store, _, _ = mock_stores

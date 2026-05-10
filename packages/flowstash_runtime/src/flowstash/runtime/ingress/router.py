@@ -67,6 +67,7 @@ def build_webhook_router() -> APIRouter:
                     record_lifecycle=False,
                 ):
                     from flowstash.context import current_context
+
                     ctx = current_context()
                     await record_run_started(
                         correlation=ctx.corelation, entry_point=h.__name__
