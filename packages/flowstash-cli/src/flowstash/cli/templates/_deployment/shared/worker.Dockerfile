@@ -15,4 +15,4 @@ RUN uv pip install --system -r pyproject.toml --extra worker || echo "no worker 
 
 RUN rm -rf src/api
 ENV PYTHONPATH=/app/src:/app
-CMD ["python", "-u", "worker_main.py"]
+ENTRYPOINT ["python", "-u", "worker_main.py"]

@@ -36,6 +36,10 @@ def get_api_url() -> str:
     )
 
 
+def _build_target_url(target: str, path: str) -> str:
+    return f"{target.rstrip('/')}/{path.lstrip('/')}"
+
+
 def _get_webhooks_from_app(entry: str, debug: bool = False) -> List[Dict[str, Any]]:
     """Loads the app entrypoint in a subprocess and extracts registered webhooks."""
 
@@ -168,7 +172,10 @@ print(json.dumps({{"webhooks": result}}))
 
 
 async def _listen_stream(
-    ws_url: str, captures_buffer: List[Dict[str, Any]], stop_event: asyncio.Event
+    ws_url: str,
+    captures_buffer: List[Dict[str, Any]],
+    stop_event: asyncio.Event,
+    error_ref: Optional[List[str]] = None,
 ):
     """Connects to the WebSocket and appends captures to the buffer."""
 
@@ -189,10 +196,14 @@ async def _listen_stream(
                 except asyncio.TimeoutError:
                     continue
                 except websockets.exceptions.ConnectionClosed:
-                    console.print("[yellow]Connection closed by server.[/yellow]")
+                    if error_ref is not None:
+                        error_ref.append("Connection closed by server.")
+                    stop_event.set()
                     break
     except Exception as e:
-        console.print(f"[red]WebSocket connection error:[/red] {e}")
+        if error_ref is not None:
+            error_ref.append(str(e))
+        stop_event.set()
 
 
 async def _wait_for_keypress(stop_event: asyncio.Event):
@@ -205,9 +216,12 @@ async def _wait_for_keypress(stop_event: asyncio.Event):
 async def _run_listen_ui(ws_url: str, path: str, ingest_url: str):
     captures_buffer: List[Dict[str, Any]] = []
     stop_event = asyncio.Event()
+    ws_error: List[str] = []
 
     # Start WS listener task
-    ws_task = asyncio.create_task(_listen_stream(ws_url, captures_buffer, stop_event))
+    ws_task = asyncio.create_task(
+        _listen_stream(ws_url, captures_buffer, stop_event, ws_error)
+    )
     input_task = asyncio.create_task(_wait_for_keypress(stop_event))
 
     console.print(f"[green]Listening on[/green] [bold]{ingest_url}[/bold]")
@@ -271,6 +285,11 @@ async def _run_listen_ui(ws_url: str, path: str, ingest_url: str):
 
     # Wait for tasks to clean up
     ws_task.cancel()
+    input_task.cancel()
+
+    if ws_error:
+        console.print(f"[red]WebSocket connection error:[/red] {ws_error[0]}")
+        return []
 
     return captures_buffer
 
@@ -552,6 +571,7 @@ def test(
         raise typer.Exit(code=0)
 
     actual_path = path
+    prompt_for_target_url = False
     selected_webhook = None
 
     if actual_path:
@@ -578,17 +598,13 @@ def test(
         if not webhook_path:
             raise typer.Exit(code=0)
 
+        prompt_for_target_url = True
         selected_webhook = next(
             (w for w in webhooks if w["path"] == webhook_path), None
         )
 
         if not actual_path:
-            actual_path = questionary.text(
-                "Target URL path (modify if needed for router prefixes):",
-                default=webhook_path,
-            ).ask()
-            if not actual_path:
-                raise typer.Exit(code=0)
+            actual_path = webhook_path
 
     test_payload_path = selected_webhook.get("test_payload_path")
     if not test_payload_path:
@@ -624,8 +640,15 @@ def test(
             if k.lower() not in ("content-length", "host", "connection")
         }
 
-    # Optional logic for target_url
-    target_url = target.rstrip("/") + "/" + actual_path.lstrip("/")
+    target_url = _build_target_url(target, actual_path)
+
+    if prompt_for_target_url:
+        target_url = questionary.text(
+            "Target URL to call (modify base URL, port, or path):",
+            default=target_url,
+        ).ask()
+        if not target_url:
+            raise typer.Exit(code=0)
 
     console.print(f"[cyan]Testing {method} {target_url}...[/cyan]")
 

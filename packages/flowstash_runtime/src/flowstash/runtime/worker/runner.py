@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import sys
 from flowstash.config.runtime_config import RuntimeConfig, BackendType
 from flowstash.queue.consumer import TaskConsumer
 
@@ -14,7 +15,9 @@ def build_worker_consumer(config: RuntimeConfig) -> TaskConsumer:
         from .backends.dramatiq.dramatiq_consumer import DramatiqConsumer
 
         return DramatiqConsumer(config)
-    elif config.backend.type == BackendType.MANAGED:
+    elif config.backend.type == BackendType.MANAGED or (
+        len(sys.argv) > 1 and sys.argv[1] == "run-task"
+    ):
         from .backends.managed.managed_consumer import ManagedConsumer
 
         return ManagedConsumer(config)
@@ -32,9 +35,19 @@ async def run_worker(config: RuntimeConfig):
     """
     Unified entry point to start a worker process.
     """
-    consumer = build_worker_consumer(config)
-
     logger.info(f"Starting worker with backend: {config.backend.type}")
+
+    if config.backend.type == BackendType.MANAGED:
+        from .backends.managed.main import run_managed_http_server
+        from .backends.managed.managed_consumer import is_managed_job_mode
+
+        if is_managed_job_mode():
+            consumer = build_worker_consumer(config)
+        else:
+            await run_managed_http_server(config)
+            return
+    else:
+        consumer = build_worker_consumer(config)
 
     # Print registered tasks and consumers
     try:
@@ -88,6 +101,9 @@ async def run_worker(config: RuntimeConfig):
         logger.warning(f"Could not print tasks/consumers on startup: {e}")
 
     await consumer.start()
+
+    if config.backend.type == BackendType.MANAGED:
+        return
 
     # If the consumer didn't block (like Dramatiq), we wait here
     try:

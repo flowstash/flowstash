@@ -19,13 +19,13 @@ def test_logger_outside_context():
         assert kwargs["custom"] == "attr"
 
 def test_logger_inside_context():
-    """Inside context, should enqueue to observability and NOT passthrough (as per instructions)."""
+    """Inside context, should enqueue to observability AND passthrough to Python logging (default)."""
     with integration_context(integration="test-int"):
         with patch("flowstash.observability.logging.enqueue_log_event") as mock_enqueue:
             with patch.object(logger._python_logger, 'log') as mock_log:
                 logger.info("Test message %s", "arg", extra={"foo": "bar"}, custom="attr")
-                
-                # Should capture
+
+                # Should capture to observability
                 mock_enqueue.assert_called_once()
                 _, k = mock_enqueue.call_args
                 assert k["logger_name"] == "flowstash.user"
@@ -33,9 +33,25 @@ def test_logger_inside_context():
                 assert k["message"] == "Test message arg"
                 assert k["attrs"] == {"foo": "bar", "custom": "attr"}
                 assert k["exc_info"] is False
-                
-                # Should NOT passthrough if we follow "otherwise" strictly
-                mock_log.assert_not_called()
+
+                # Should also passthrough to Python logger (passthrough=True by default)
+                mock_log.assert_called_once()
+
+
+def test_logger_inside_context_passthrough_disabled():
+    """When passthrough is disabled, logs should NOT reach the Python logger."""
+    from flowstash.config.observability_config import ObservabilityConfig, LoggingConfig
+    from flowstash.observability.ingestion import set_observability_config
+    with integration_context(integration="test-int"):
+        with patch("flowstash.observability.logging.enqueue_log_event") as mock_enqueue:
+            with patch.object(logger._python_logger, 'log') as mock_log:
+                set_observability_config(ObservabilityConfig(logging=LoggingConfig(passthrough=False)))
+                try:
+                    logger.info("Should not passthrough")
+                    mock_enqueue.assert_called_once()
+                    mock_log.assert_not_called()
+                finally:
+                    set_observability_config(ObservabilityConfig())
 
 def test_logger_exception():
     """logger.exception should behave like ERROR with exc_info=True."""

@@ -6,7 +6,7 @@ from typing import Optional, Any, Protocol, runtime_checkable
 from pydantic import BaseModel
 from .records_model import RecordData
 from .redis_client import get_redis_client
-from ..context import get_context
+from ..context import get_context, integration_context
 from ..observability.ingestion import enqueue_record_link
 from ..observability.model import RecordLinkKind
 from ..observability.registry import get_blob_store
@@ -31,19 +31,24 @@ return 0
 """
 _sha = None
 
+
 @runtime_checkable
 class FeedBackend(Protocol):
     async def publish(self, feed_id: str, record: RecordData) -> str: ...
 
+
 _feed_backend: Optional[FeedBackend] = None
+
 
 def set_feed_backend(backend: FeedBackend) -> FeedBackend:
     global _feed_backend
     _feed_backend = backend
     return backend
 
+
 def get_feed_backend() -> Optional[FeedBackend]:
     return _feed_backend
+
 
 class RecordsFeed:
     def __init__(self, feed_id: str):
@@ -57,7 +62,7 @@ class RecordsFeed:
         global _sha
         if _sha is None:
             _sha = await redis_client.script_load(_PUBLISH_SCRIPT)
-        
+
         try:
             return await redis_client.evalsha(_sha, len(keys), *keys, *args)
         except Exception as e:
@@ -69,6 +74,8 @@ class RecordsFeed:
     async def publish(self, record: RecordData):
         ctx = get_context()
         if not ctx:
+            with integration_context(record_lifecycle=False) as ctx:
+                await self.publish(record)
             return
 
         backend = get_feed_backend()
@@ -86,7 +93,7 @@ class RecordsFeed:
         # Externalize large data to BlobStore (> 5KB)
         data_to_store = record.data
         blob_ref = None
-        
+
         raw_data = json.dumps(record.data).encode("utf-8")
         if len(raw_data) > 5120:
             try:
@@ -94,11 +101,9 @@ class RecordsFeed:
                 # Prefix with isoDate for organization if needed, but registry handles that usually
                 blob_path = f"feeds/{self.feed_id}/{record.record_type}/{dedupe_key}"
                 blob_ref, _, _ = get_blob_store().put(
-                    path_hint=blob_path,
-                    content_type="application/json",
-                    data=raw_data
+                    path_hint=blob_path, content_type="application/json", data=raw_data
                 )
-                data_to_store = None # Only store reference
+                data_to_store = None  # Only store reference
             except Exception:
                 # Fallback to Redis if blob store is unavailable
                 pass
@@ -123,12 +128,12 @@ class RecordsFeed:
         keys = [
             f"rf:{self.feed_id}:latest",
             f"rf:{self.feed_id}:ts",
-            f"rf:{self.feed_id}:stream"
+            f"rf:{self.feed_id}:stream",
         ]
         args = [dedupe_key, str(ts_val), payload_json]
-        
+
         args = [dedupe_key, str(ts_val), payload_json]
-        
+
         await self._execute_script(redis_client, keys, args)
 
         # 3. Emit RecordLink (PUBLISHED)
@@ -141,7 +146,5 @@ class RecordsFeed:
             span_id=ctx.span_id,
             record_key=dedupe_key,
             kind=RecordLinkKind.PUBLISHED,
-            source=self.feed_id
+            source=self.feed_id,
         )
-
-

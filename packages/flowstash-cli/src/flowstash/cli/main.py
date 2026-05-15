@@ -356,6 +356,12 @@ def whoami():
     auth_cmds.whoami()
 
 
+@app.command("logged-in")
+def logged_in():
+    """Show who is currently logged in."""
+    auth_cmds.whoami()
+
+
 @app.command()
 def logout():
     """Log out from the platform."""

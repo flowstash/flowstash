@@ -7,6 +7,7 @@ from rich.console import Console
 import asyncio
 import httpx
 from ..core.auth_server import start_callback_server
+from ..core.api_client import APIClient
 from ..core.config import (
     load_global_config, 
     set_access_token, 
@@ -94,6 +95,13 @@ def logout():
     delete_access_token()
     console.print("[yellow]Logged out successfully.[/yellow]")
 
+
+def _fetch_current_user() -> Optional[dict]:
+    try:
+        return asyncio.run(APIClient().get("/v1/auth/me"))
+    except Exception:
+        return None
+
 @app.command()
 def whoami():
     """Show current login status."""
@@ -103,10 +111,29 @@ def whoami():
     
     if token:
         console.print(f"API URL: {global_config.api_url}")
+        user_info = _fetch_current_user()
+        login = None
+        tenant_id = None
+
+        if user_info:
+            login = (
+                user_info.get("email")
+                or user_info.get("username")
+                or user_info.get("login")
+            )
+            tenant_id = user_info.get("tenant_id")
+        elif project_config:
+            login = project_config.user_email
+            tenant_id = project_config.tenant_id
+
+        if login:
+            console.print(f"Logged in as: [bold]{login}[/bold]")
+        if tenant_id:
+            console.print(f"Tenant: [bold]{tenant_id}[/bold]")
+
         if project_config:
-            console.print(f"Logged in as tenant: [bold]{project_config.tenant_id}[/bold]")
             console.print(f"Current Project: [bold]{project_config.project_id}[/bold]")
-        else:
+        elif not user_info:
             console.print("Logged in, but no project context found in this directory.")
     else:
         console.print("Not logged in.")

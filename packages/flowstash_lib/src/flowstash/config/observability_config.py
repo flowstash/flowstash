@@ -21,6 +21,10 @@ class LoggingConfig(BaseModel):
     include_prefixes: list[str] = Field(default_factory=list, alias="includePrefixes")
     exclude_prefixes: list[str] = Field(default_factory=list, alias="excludePrefixes")
     filter_fn: Optional[str] = Field(None, alias="filterFn")
+    # When True (default), logs captured for observability are also forwarded to the
+    # underlying Python logger (stdout/stderr).  Set to False to suppress stdout output
+    # while observability is active.  Override at runtime via FLOWSTASH_LOG_PASSTHROUGH.
+    passthrough: bool = True
 
     model_config = ConfigDict(populate_by_name=True)
 

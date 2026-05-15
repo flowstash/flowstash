@@ -7,6 +7,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from ..core.api_client import APIClient
 from ..core.config import load_project_config
 from .build import run_build_flow
+import flowstash.runtime
 
 app = typer.Typer()
 console = Console()
@@ -17,7 +18,7 @@ _STATUS_LABELS = {
     "VALIDATING": "Validating container images...",
     "DEPLOYING": "Deploying services...",
     "HEALTH_CHECK": "Health-checking API and Worker...",
-    "SYNCING_SCHEDULES": "Fetching and syncing scheduled tasks...",
+    "SYNCING_SCHEDULES": "Waiting for deployment verification...",
     "DEPLOYED": "Deployed successfully ✓",
     "FAILED": "Deployment failed.",
 }
@@ -60,6 +61,7 @@ async def run_deploy_flow(env: str, artifact_id: Optional[str] = None):
                 "project_id": project_id,
                 "artifact_id": artifact_id,
                 "env_vars": {"ENVIRONMENT": env},
+                "flowstash_runtime_version": flowstash.runtime.__version__,
             },
         )
         deploy_id = deploy_data["deploy_id"]

@@ -94,7 +94,7 @@ new-patch: bump-version-patch build build-base publish
 new-rc-version: bump-version-rc build publish
 	@NEW_VERSION=$$(poetry version -s); \
 	echo "Done... you can install it like this"; \
-	echo "uv add \"flowstash>=$$NEW_VERSION\" --prerelease allow"
+	echo "uv add \"flowstash>=$$NEW_VERSION\" --prerelease allow --refresh"
 
 publish-rc: finalize-rc-version build publish
 

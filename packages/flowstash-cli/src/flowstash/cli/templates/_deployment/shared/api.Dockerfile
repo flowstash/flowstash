@@ -11,8 +11,8 @@ ARG SERVICE_EXTRAS="api"
 # Install base deps + extras into system site-packages
 # Base deps:
 RUN uv pip install --system -r pyproject.toml
-RUN uv pip install --system -r pyproject.toml --extra api || echo "no worker extra; skipping"
+RUN uv pip install --system -r pyproject.toml --extra api || echo "no api extra; skipping"
 RUN rm -rf src/worker
 EXPOSE 8000
 ENV PYTHONPATH=/app/src:/app
-CMD ["python", "api_main.py"]
+ENTRYPOINT ["python", "api_main.py"]

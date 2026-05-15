@@ -3,6 +3,7 @@ import os
 from contextlib import asynccontextmanager
 
 import httpx
+import uvicorn
 from fastapi import FastAPI
 from flowstash.config.runtime_config import RuntimeConfig
 from flowstash.observability.ingestion import AsyncManager
@@ -134,3 +135,13 @@ def create_app(config: RuntimeConfig) -> FastAPI:
         return {"status": "ok"}
 
     return app
+
+
+async def run_managed_http_server(config: RuntimeConfig) -> None:
+    """Run the managed worker in HTTP mode for feed delivery callbacks."""
+    app = create_app(config)
+    port = int(os.getenv("PORT", "8080"))
+    server = uvicorn.Server(
+        uvicorn.Config(app, host="0.0.0.0", port=port, log_level="info")
+    )
+    await server.serve()

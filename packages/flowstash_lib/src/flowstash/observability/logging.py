@@ -1,7 +1,27 @@
 import logging
+import os
+import threading
 from typing import Any, Dict, Optional, Union
 from ..context import get_context
-from .ingestion import enqueue_log_event
+from .ingestion import enqueue_log_event, get_observability_config
+
+# Thread-local flag to prevent double-capture when IntegrationLogger passes through
+# to the underlying Python logger while IntegrationLogHandler is also installed.
+_in_integration_logger = threading.local()
+
+
+def _passthrough_enabled() -> bool:
+    """Check whether captured logs should also be forwarded to stdout/Python logging.
+
+    Priority: FLOWSTASH_LOG_PASSTHROUGH env var > observability config > default True.
+    """
+    env = os.getenv("FLOWSTASH_LOG_PASSTHROUGH")
+    if env is not None:
+        return env.lower() not in ("false", "0", "no")
+    try:
+        return get_observability_config().logging.passthrough
+    except Exception:
+        return True
 
 
 class IntegrationLogger:
@@ -76,6 +96,13 @@ class IntegrationLogger:
                 attrs=attrs,
                 exc_info=bool(kwargs.get("exc_info"))
             )
+
+            if _passthrough_enabled():
+                _in_integration_logger.active = True
+                try:
+                    self._python_logger.log(level, msg, *args, **kwargs)
+                finally:
+                    _in_integration_logger.active = False
         except Exception:
             # Observability must never fail execution
             pass
@@ -99,6 +126,9 @@ def setup_global_logging():
             # Prevent infinite loops and only capture when inside a context
             if get_context() is None or record.name.startswith("flowstash.observability"):
                 return
+            # Already captured by IntegrationLogger._emit(); skip to avoid double-ingestion
+            if getattr(_in_integration_logger, "active", False):
+                return
 
             try:
                 enqueue_log_event(
@@ -115,12 +145,14 @@ def setup_global_logging():
     handler.setLevel(logging.NOTSET)
 
     root_logger = logging.getLogger()
-    # Existing root handlers with NOTSET level relied on the root logger's WARNING level
-    # for their effective filtering. Pin them explicitly so they don't start emitting
-    # DEBUG/INFO after we lower the root level below.
-    for existing_handler in root_logger.handlers:
-        if existing_handler.level == logging.NOTSET:
-            existing_handler.setLevel(logging.WARNING)
+    # When passthrough is disabled, pin existing handlers (e.g. the default StreamHandler)
+    # to WARNING so they don't start emitting DEBUG/INFO after we lower the root level.
+    # When passthrough is enabled we leave them untouched — they need to keep receiving
+    # records so that captured logs also appear on stdout.
+    if not _passthrough_enabled():
+        for existing_handler in root_logger.handlers:
+            if existing_handler.level == logging.NOTSET:
+                existing_handler.setLevel(logging.WARNING)
 
     root_logger.addHandler(handler)
     # Allow all records to be created and reach our handler.

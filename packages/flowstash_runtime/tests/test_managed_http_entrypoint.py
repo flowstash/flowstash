@@ -5,8 +5,10 @@ import httpx
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI
+from flowstash.config.runtime_config import RuntimeConfig
 
 import flowstash.runtime.worker.backends.managed.http_entrypoint as http_entrypoint
+from flowstash.runtime.worker.backends.managed.main import create_app
 from flowstash.runtime.worker.backends.managed.drain import ManagedTaskDrainController
 
 
@@ -46,6 +48,18 @@ async def managed_client(managed_app):
         transport=transport, base_url="http://testserver"
     ) as client:
         yield client
+
+
+def test_create_app_wires_managed_routes_and_drain_controller():
+    app = create_app(RuntimeConfig())
+
+    assert isinstance(app.state.managed_task_drain_controller, ManagedTaskDrainController)
+    routes = {route.path for route in app.router.routes}
+
+    assert "/health" in routes
+    assert "/handle_task" in routes
+    assert "/internal/feed/kick/batched" in routes
+    assert "/internal/feed/deliver/classic" in routes
 
 
 @pytest.mark.asyncio

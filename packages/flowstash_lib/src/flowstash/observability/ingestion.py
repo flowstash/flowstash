@@ -39,6 +39,10 @@ logger = logging.getLogger(__name__)
 _config = ObservabilityConfig()
 
 
+def get_observability_config() -> ObservabilityConfig:
+    return _config
+
+
 def set_observability_config(config: ObservabilityConfig):
     global _config
     _config = config
