@@ -1,6 +1,6 @@
 [project]
 name = "flowstash-core"
-version = "0.7.1rc2"
+version = "0.7.3"
 description = "A managed integration framework core."
 authors = [
     {name = "juraj.bezdek@gmail.com", email = "juraj.bezdek@gmail.com"}

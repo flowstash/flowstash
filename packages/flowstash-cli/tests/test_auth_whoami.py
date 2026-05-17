@@ -9,7 +9,9 @@ def test_whoami_shows_user_login_from_auth_me(monkeypatch):
     class GlobalConfig:
         api_url = "https://api.flowstash.dev"
 
-    monkeypatch.setattr("flowstash.cli.commands.auth.load_global_config", lambda: GlobalConfig())
+    monkeypatch.setattr(
+        "flowstash.cli.commands.auth.load_global_config", lambda: GlobalConfig()
+    )
     monkeypatch.setattr("flowstash.cli.commands.auth.load_project_config", lambda: None)
     monkeypatch.setattr(
         "flowstash.cli.commands.auth._fetch_current_user",
@@ -34,8 +36,12 @@ def test_whoami_falls_back_to_project_login_when_auth_me_fails(monkeypatch):
         tenant_id = "tenant-fallback"
         project_id = "project-123"
 
-    monkeypatch.setattr("flowstash.cli.commands.auth.load_global_config", lambda: GlobalConfig())
-    monkeypatch.setattr("flowstash.cli.commands.auth.load_project_config", lambda: ProjectConfig())
+    monkeypatch.setattr(
+        "flowstash.cli.commands.auth.load_global_config", lambda: GlobalConfig()
+    )
+    monkeypatch.setattr(
+        "flowstash.cli.commands.auth.load_project_config", lambda: ProjectConfig()
+    )
     monkeypatch.setattr("flowstash.cli.commands.auth._fetch_current_user", lambda: None)
 
     result = CliRunner().invoke(app, ["whoami"])

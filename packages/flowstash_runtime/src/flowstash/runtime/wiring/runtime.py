@@ -225,7 +225,6 @@ def initialize_runtime(
                 ManagedTasksBackend(
                     api_url=managed_api_url,
                     auth_token=managed_auth_token,
-                    service_url=os.getenv("MANAGED_SERVICE_URL"),
                 )
             )
 

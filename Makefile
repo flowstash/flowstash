@@ -88,10 +88,17 @@ finalize-rc-version:
 	@$(MAKE) update-internal-versions
 
 new-version: bump-version build build-base publish
+	@NEW_VERSION=$$(poetry version -s); \
+	echo "Done... you can install it like this"; \
+	echo "uv add \"flowstash>=$$NEW_VERSION\"  allow --refresh"
 
 new-patch: bump-version-patch build build-base publish
+	@NEW_VERSION=$$(poetry version -s); \
+	echo "Done... you can install it like this"; \
+	echo "uv add \"flowstash>=$$NEW_VERSION\"  allow --refresh"
 
-new-rc-version: bump-version-rc build publish
+new-rc-version: build publish
+	@$(MAKE) bump-version-rc
 	@NEW_VERSION=$$(poetry version -s); \
 	echo "Done... you can install it like this"; \
 	echo "uv add \"flowstash>=$$NEW_VERSION\" --prerelease allow --refresh"

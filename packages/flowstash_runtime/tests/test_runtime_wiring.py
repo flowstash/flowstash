@@ -93,6 +93,28 @@ def test_build_worker_consumer_async_raises():
         build_worker_consumer(config)
 
 
+def test_managed_job_mode_recognizes_run_task(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["worker_main.py", "run-task", "pkg.task"])
+    assert managed_consumer_module.is_managed_job_mode() is True
+
+
+def test_managed_job_mode_recognizes_register_schedules(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["worker_main.py", "register_schedules", "dep-1"])
+    assert managed_consumer_module.is_managed_job_mode() is True
+
+
+def test_managed_job_mode_rejects_consume_feed(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["worker_main.py", "consume-feed", "aabbcc"])
+    assert managed_consumer_module.is_managed_job_mode() is False
+
+
+def test_managed_job_mode_rejects_consume_feed_batch(monkeypatch):
+    monkeypatch.setattr(
+        sys, "argv", ["worker_main.py", "consume-feed-batch", "batch-1"]
+    )
+    assert managed_consumer_module.is_managed_job_mode() is False
+
+
 def test_build_worker_runtime_is_deprecated_but_works():
     config = RuntimeConfig(backend=BackendConfig(type=BackendType.ASYNC))
     # This should still work but internaly use initialize_runtime

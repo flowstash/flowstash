@@ -97,6 +97,31 @@ class ManagedTasksBackend(TaskBackend):
         )
         self._registered_tasks: List[Dict[str, Any]] = []
 
+    def _derive_task_name(self, func: Callable) -> str:
+        """Derive a stable task_id from a callable or TaskWrapper."""
+        if hasattr(func, "func"):
+            underlying = func.func
+            return f"{underlying.__module__}.{underlying.__name__}"
+        if hasattr(func, "fn"):
+            return f"{func.fn.__module__}.{func.fn.__name__}"
+        return f"{func.__module__}.{func.__name__}"
+
+    def configure_task(self, wrapper: Any) -> None:
+        """
+        Register a task wrapper in the worker-side task registry so that the
+        runtime can resolve it by task_id when /handle_task is called.
+
+        Call this from your worker entrypoint after initialize_runtime() for every
+        @task-decorated function.
+        """
+        from flowstash.runtime.worker.backends.managed.task_resolver import (
+            register_task,
+        )
+
+        task_id = self._derive_task_name(wrapper)
+        register_task(task_id, wrapper)
+        logger.info(f"configure_task: registered '{task_id}'")
+
     def _serialize_args(self, func: Callable, args: tuple, kwargs: dict) -> dict:
         """Serialize function reference and arguments to a JSON-safe payload."""
         func_ref = (
@@ -123,14 +148,11 @@ class ManagedTasksBackend(TaskBackend):
     ) -> JobHandle:
         """Submit a task via the Platform API → Cloud Tasks."""
         target_url = f"{self.service_url}/handle_task"
+        task_name = self._derive_task_name(func)
 
         payload: Dict[str, Any] = {
             "target_url": target_url,
-            "task_name": (
-                f"{func.__module__}.{func.__name__}"
-                if hasattr(func, "__module__")
-                else str(func)
-            ),
+            "task_name": task_name,
             "project_id": self.project_id,
             "environment": self.environment,
             "payload": {
@@ -171,6 +193,7 @@ class ManagedTasksBackend(TaskBackend):
         import time
 
         target_url = f"{self.service_url}/handle_task"
+        task_id = self._derive_task_name(func)
 
         # Convert delay (ms) to absolute schedule_time
         if isinstance(eta_or_delay, (int, float)):
@@ -180,11 +203,7 @@ class ManagedTasksBackend(TaskBackend):
 
         payload: Dict[str, Any] = {
             "target_url": target_url,
-            "task_name": (
-                f"{func.__module__}.{func.__name__}"
-                if hasattr(func, "__module__")
-                else str(func)
-            ),
+            "task_name": task_id,
             "project_id": self.project_id,
             "environment": self.environment,
             "payload": {
@@ -223,21 +242,10 @@ class ManagedTasksBackend(TaskBackend):
         The platform will create/update a Cloud Scheduler job
         for this cron expression and store the task definition in Firestore.
         """
-        # Derive task_id from function path
-        if hasattr(func, "func"):
-            # TaskWrapper
-            underlying = func.func
-            task_id = f"{underlying.__module__}.{underlying.__name__}"
-        elif hasattr(func, "fn"):
-            # Dramatiq actor
-            task_id = f"{func.fn.__module__}.{func.fn.__name__}"
-        else:
-            task_id = f"{func.__module__}.{func.__name__}"
-
+        task_id = self._derive_task_name(func)
         task_name = getattr(func, "__name__", str(func))
 
         # Read integration/pipeline from TaskWrapper metadata when available.
-        # These are first-class fields on the wrapper, not tags.
         meta = getattr(func, "metadata", {})
         integration = meta.get("integration") or "unknown"
         pipeline = meta.get("pipeline") or "unknown"

@@ -36,6 +36,40 @@ def _dummy_func():
     pass
 
 
+# ─── ManagedTasksBackend._derive_task_id ─────────────────────────────
+
+
+def test_derive_task_id_plain_function(backend):
+    """_derive_task_id() should return module.name for a plain function."""
+    task_id = backend._derive_task_id(_dummy_func)
+    assert task_id == f"{_dummy_func.__module__}._dummy_func"
+
+
+def test_derive_task_id_task_wrapper(backend):
+    """_derive_task_id() should unwrap TaskWrapper via .func attribute."""
+    from types import SimpleNamespace
+
+    fake_func = SimpleNamespace(__module__="my.module", __name__="my_task")
+
+    class FakeWrapper:
+        func = fake_func
+
+    task_id = backend._derive_task_id(FakeWrapper())
+    assert task_id == "my.module.my_task"
+
+
+def test_derive_task_id_is_consistent_across_submit_and_register_schedule(backend):
+    """submit() and register_schedule() should produce the same task_id."""
+    expected = backend._derive_task_id(_dummy_func)
+
+    # register_schedule stores task_id in _registered_tasks
+    from flowstash.queue.backend import Schedule
+
+    backend.register_schedule(_dummy_func, Schedule(cron="0 * * * *"))
+    registered_id = backend._registered_tasks[-1]["task_id"]
+    assert registered_id == expected
+
+
 # ─── ManagedTasksBackend.submit ──────────────────────────────────────
 
 

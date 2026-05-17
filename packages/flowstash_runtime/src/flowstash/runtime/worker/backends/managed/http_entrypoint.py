@@ -10,8 +10,6 @@ Feed endpoints:
   POST /internal/feed/deliver/classic — single-record classic delivery (called by Cloud Tasks)
 """
 
-import importlib
-import inspect
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -21,7 +19,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from flowstash.context import integration_context
 from flowstash.observability.ingestion import (
@@ -29,33 +27,19 @@ from flowstash.observability.ingestion import (
     record_run_ended,
     normalize_arguments,
 )
-from flowstash.queue.backend import get_backend
 
 from .drain import ManagedTaskDrainController
+from .task_resolver import (
+    resolve_function as _registry_resolve,
+    _invoke_task_callable,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
-@router.get("/schedules")
-async def get_schedules():
-    """
-    Return all scheduled tasks registered in the active backend.
-
-    Used by the Platform API deployment flow to discover schedules
-    via a pull model instead of an INIT job push model.
-    """
-    backend = get_backend()
-
-    # We expect ManagedTasksBackend to populate _registered_tasks
-    if hasattr(backend, "_registered_tasks"):
-        return {"tasks": backend._registered_tasks}
-
-    return {"tasks": []}
-
-
-# ─── Request Model ───────────────────────────────────────────────────
+# ─── Request Models ─────────────────────────────────────────────────
 
 
 class DelegationMetadataModel(BaseModel):
@@ -66,7 +50,22 @@ class DelegationMetadataModel(BaseModel):
     target_task: Optional[str] = None
     accepted_id: Optional[str] = None
     schedule_time: Optional[str] = None
-    attrs: Dict[str, Any] = {}
+    attrs: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ManagedHandleTaskPayload(BaseModel):
+    """Legacy nested payload accepted for backward compatibility."""
+
+    func_ref: Optional[str] = None
+    args: list = Field(default_factory=list)
+    kwargs: dict = Field(default_factory=dict)
+    integration: Optional[str] = None
+    pipeline: Optional[str] = None
+    triggered_by: Optional[str] = None
+    cron: Optional[str] = None
+    run_id: Optional[str] = None
+    tags: Optional[Dict[str, Any]] = None
+    delegation: Optional[DelegationMetadataModel] = None
 
 
 class TaskPayload(BaseModel):
@@ -74,64 +73,83 @@ class TaskPayload(BaseModel):
 
     task_id: Optional[str] = None
     task_name: Optional[str] = None
-    func_ref: Optional[str] = None  # e.g. "my_module.my_function"
-    args: list = []
-    kwargs: dict = {}
+    func_ref: Optional[str] = None
+    args: list = Field(default_factory=list)
+    kwargs: dict = Field(default_factory=dict)
     integration: Optional[str] = None
     pipeline: Optional[str] = None
     triggered_by: Optional[str] = None
     cron: Optional[str] = None
     # run_id is kept for backward compatibility with older payloads that carry it,
-    # but it is NOT used as the execution run_id.  The execution side always allocates
-    # a fresh run_id.  Causal metadata is carried in the `delegation` field instead.
+    # but it is NOT used as the execution run_id. The execution side always allocates
+    # a fresh run_id. Causal metadata is carried in the `delegation` field instead.
     run_id: Optional[str] = None
     tags: Optional[Dict[str, Any]] = None
     delegation: Optional[DelegationMetadataModel] = None
+    payload: Optional[ManagedHandleTaskPayload] = None
+
+    def _payload_value(self, field_name: str) -> Any:
+        if self.payload is None:
+            return None
+        return getattr(self.payload, field_name)
+
+    def effective_func_ref(self) -> Optional[str]:
+        return self.func_ref or self._payload_value("func_ref")
+
+    def effective_args(self) -> list:
+        return self.args or self._payload_value("args") or []
+
+    def effective_kwargs(self) -> dict:
+        return self.kwargs or self._payload_value("kwargs") or {}
+
+    def effective_integration(self) -> Optional[str]:
+        return self.integration or self._payload_value("integration")
+
+    def effective_pipeline(self) -> Optional[str]:
+        return self.pipeline or self._payload_value("pipeline")
+
+    def effective_triggered_by(self) -> Optional[str]:
+        return self.triggered_by or self._payload_value("triggered_by")
+
+    def effective_cron(self) -> Optional[str]:
+        return self.cron or self._payload_value("cron")
+
+    def effective_tags(self) -> Dict[str, Any]:
+        tags = dict(self._payload_value("tags") or {})
+        tags.update(self.tags or {})
+        return tags
+
+    def effective_delegation(self) -> Optional[DelegationMetadataModel]:
+        return self.delegation or self._payload_value("delegation")
+
+    def execution_task_ref(self) -> Optional[str]:
+        return self.task_id or self.task_name or self.effective_func_ref()
 
 
-# ─── Function Registry ───────────────────────────────────────────────
+# ─── Task Resolution ─────────────────────────────────────────────────
 
 
-_task_registry: Dict[str, Any] = {}
-
-
-def register_task(task_id: str, func: Any) -> None:
+def _resolve_task_callable(task_name: str, func_ref: Optional[str]) -> Any:
     """
-    Register a callable task by its ID.
+    Resolve a task callable.
 
-    Called during worker startup to build the function lookup table.
+    Tries the task registry by task_name first, then falls back to func_ref
+    (dotted import path) for backward compatibility.
+    Raises ValueError if the task cannot be resolved.
     """
-    _task_registry[task_id] = func
-    logger.info(f"Registered task handler: {task_id}")
-
-
-def get_task_registry() -> Dict[str, Any]:
-    """Return the current task registry."""
-    return _task_registry
-
-
-def _resolve_function(func_ref: str) -> Any:
-    """
-    Resolve a function reference like 'module.path.function_name' to a callable.
-
-    First checks the local registry, then falls back to dynamic import.
-    """
-    # Check registry first
-    if func_ref in _task_registry:
-        return _task_registry[func_ref]
-
-    # Dynamic import fallback
-    parts = func_ref.rsplit(".", 1)
-    if len(parts) != 2:
-        raise ValueError(f"Invalid function reference: {func_ref}")
-
-    module_path, func_name = parts
     try:
-        module = importlib.import_module(module_path)
-        func = getattr(module, func_name)
-        return func
-    except (ImportError, AttributeError) as e:
-        raise ValueError(f"Cannot resolve function '{func_ref}': {e}")
+        if task_name:
+            return _registry_resolve(task_name)
+    except ValueError:
+        pass
+
+    if func_ref:
+        try:
+            return _registry_resolve(func_ref)
+        except ValueError:
+            pass
+
+    raise ValueError(f"Cannot resolve task '{task_name}'")
 
 
 def _get_drain_controller(request: Request) -> ManagedTaskDrainController:
@@ -163,37 +181,30 @@ async def _managed_request_scope(request: Request, kind: str, task_ref: str):
         await _flush_observability()
 
 
-async def _invoke_task_callable(func: Any, args: list, kwargs: dict) -> Any:
-    if hasattr(func, "run"):
-        return await func.run(*args, **kwargs)
-    if hasattr(func, "func"):
-        underlying = func.func
-        if inspect.iscoroutinefunction(underlying):
-            return await underlying(*args, **kwargs)
-        return underlying(*args, **kwargs)
-    if inspect.iscoroutinefunction(func):
-        return await func(*args, **kwargs)
-    return func(*args, **kwargs)
-
-
-async def _execute_managed_task(payload: TaskPayload, func_ref: str, func: Any) -> dict:
-    integration = payload.integration or "unknown"
-    pipeline = payload.pipeline or "unknown"
+async def _execute_managed_task(payload: TaskPayload) -> dict:
+    integration = payload.effective_integration() or "unknown"
+    pipeline = payload.effective_pipeline() or "unknown"
     parent_run_id: Optional[str] = None
     operation_id: Optional[str] = None
-    if payload.delegation:
-        parent_run_id = payload.delegation.parent_run_id
-        operation_id = payload.delegation.operation_id
-    tags = payload.tags or {}
+    delegation = payload.effective_delegation()
+    if delegation:
+        parent_run_id = delegation.parent_run_id
+        operation_id = delegation.operation_id
+    tags = payload.effective_tags()
 
-    if payload.triggered_by:
-        tags["triggered_by"] = payload.triggered_by
-    if payload.cron:
-        tags["cron"] = payload.cron
+    triggered_by = payload.effective_triggered_by()
+    if triggered_by:
+        tags["triggered_by"] = triggered_by
 
-    status_result = "SUCCEEDED"
+    cron = payload.effective_cron()
+    if cron:
+        tags["cron"] = cron
 
-    normalized_args = normalize_arguments(func, payload.args, payload.kwargs)
+    func_ref = payload.effective_func_ref() or payload.task_id
+    entry_point = payload.task_name or func_ref or payload.task_id or "unknown"
+    args = payload.effective_args()
+    kwargs = payload.effective_kwargs()
+    raw_args = {"args": args, "kwargs": kwargs}
 
     with integration_context(
         integration=integration,
@@ -201,37 +212,50 @@ async def _execute_managed_task(payload: TaskPayload, func_ref: str, func: Any) 
         parent_run_id=parent_run_id,
         operation_id=operation_id,
         tags=tags,
-        attrs={"args": normalized_args},
+        attrs={"args": raw_args},
         record_lifecycle=False,
     ) as ctx:
+        try:
+            func = _resolve_task_callable(
+                payload.task_name or payload.task_id, func_ref
+            )
+        except ValueError as e:
+            logger.warning(f"Could not resolve task '{entry_point}': {e}")
+            await record_run_started(
+                correlation=ctx.corelation,
+                entry_point=entry_point,
+                attrs={"args": raw_args},
+            )
+            await record_run_ended(
+                status="FAILED",
+                correlation=ctx.corelation,
+                attrs={"error": str(e), "task_resolution_failed": True},
+            )
+            raise
+
+        normalized_args = normalize_arguments(func, args, kwargs)
         await record_run_started(
             correlation=ctx.corelation,
-            entry_point=payload.task_name or func_ref,
+            entry_point=entry_point,
             attrs={"args": normalized_args},
         )
 
         try:
-            await _invoke_task_callable(func, payload.args, payload.kwargs)
+            await _invoke_task_callable(func, args, kwargs)
         except Exception as e:
             import traceback
 
-            status_result = "FAILED"
             error = str(e)
             tb = traceback.format_exc()
             logger.error(f"Task execution failed: {func_ref}: {e}", exc_info=True)
             await record_run_ended(
-                status=status_result,
+                status="FAILED",
                 correlation=ctx.corelation,
                 attrs={"error": error, "traceback": tb},
             )
-            return {
-                "status": "FAILED",
-                "error": error,
-                "task": func_ref,
-            }
 
         await record_run_ended(
-            status=status_result,
+            status="SUCCEEDED",
             correlation=ctx.corelation,
         )
 
@@ -247,32 +271,35 @@ async def _execute_managed_task(payload: TaskPayload, func_ref: str, func: Any) 
 @router.post("/handle_task")
 async def handle_task(request: Request, payload: TaskPayload):
     """
-    Receive and execute a task triggered in managed mode.
-    """
-    func_ref = payload.func_ref or payload.task_id or payload.task_name
+    Receive and execute a task delivered by the managed platform.
 
-    if not func_ref:
+    Accepts the original flat task payload. A nested `payload` object is still
+    accepted for backward compatibility with already-enqueued deliveries.
+    Returns 404 + {"status": "TASK_NOT_FOUND"} when the task cannot be resolved
+    (signals the platform to clean up orphaned schedules).
+    Returns 500 on execution failure so Cloud Tasks retries the delivery.
+    """
+    task_ref = payload.execution_task_ref()
+    if not task_ref:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Missing 'func_ref', 'task_id', or 'task_name' in payload",
+            detail="Missing 'task_id', 'task_name', or 'func_ref' in payload",
         )
 
-    async with _managed_request_scope(request, "task", func_ref) as admitted:
+    async with _managed_request_scope(request, "task", task_ref) as admitted:
         if not admitted:
             return JSONResponse(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                content={"status": "DRAINING", "task": func_ref},
+                content={"status": "DRAINING", "task": task_ref},
             )
 
         try:
-            func = _resolve_function(func_ref)
+            return await _execute_managed_task(payload)
         except ValueError as e:
             return JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_404_NOT_FOUND,
                 content={"status": "TASK_NOT_FOUND", "detail": str(e)},
             )
-
-        return await _execute_managed_task(payload, func_ref, func)
 
 
 # ─── Feed: shared helpers ────────────────────────────────────────────
@@ -398,7 +425,12 @@ async def kick_batched(http_request: Request, request: KickBatchedRequest):
 
                 consumers = get_registered_consumers()
                 spec = next(
-                    (c for c in consumers if c.subscription_name == request.group_name),
+                    (
+                        c
+                        for c in consumers
+                        if c.feed_id == request.feed_id
+                        and c.subscription_name == request.group_name
+                    ),
                     None,
                 )
 
@@ -521,7 +553,7 @@ async def kick_batched(http_request: Request, request: KickBatchedRequest):
 class DeliverClassicRequest(BaseModel):
     """
     Pushed by Cloud Tasks when a classic (single-record, non-batched) consumer
-    is registered. Contains one complete record.
+    is registered. Contains one complete record plus causal source metadata.
     """
 
     tenant_id: str
@@ -534,6 +566,11 @@ class DeliverClassicRequest(BaseModel):
     blob_ref: Optional[str] = None
     record_type: Optional[str] = "managed"
     record_id: Optional[str] = None
+    # Causal source metadata from the publishing run
+    source_integration: Optional[str] = None
+    source_pipeline: Optional[str] = None
+    source_run_id: Optional[str] = None
+    source_traceparent: Optional[str] = None
 
 
 @router.post("/internal/feed/deliver/classic")
@@ -564,18 +601,27 @@ async def deliver_classic(http_request: Request, request: DeliverClassicRequest)
 
         consumers = get_registered_consumers()
         spec = next(
-            (c for c in consumers if c.subscription_name == request.group_name),
+            (
+                c
+                for c in consumers
+                if c.feed_id == request.feed_id
+                and c.subscription_name == request.group_name
+            ),
             None,
         )
 
         if not spec:
             logger.warning(
-                f"deliver_classic: no handler for group={request.group_name}. "
+                f"deliver_classic: no handler for feed={request.feed_id} "
+                f"group={request.group_name}. "
                 "Returning 404 so Cloud Tasks stops retrying."
             )
             raise HTTPException(
                 status_code=404,
-                detail=f"No handler registered for group '{request.group_name}'",
+                detail=(
+                    f"No handler registered for feed '{request.feed_id}' "
+                    f"group '{request.group_name}'"
+                ),
             )
 
         item = {
@@ -593,11 +639,22 @@ async def deliver_classic(http_request: Request, request: DeliverClassicRequest)
                 detail=f"Could not resolve data for dedupe_key={request.dedupe_key}",
             )
 
+        source_tags: Dict[str, Any] = {}
+        if request.source_integration:
+            source_tags["source_integration"] = request.source_integration
+        if request.source_pipeline:
+            source_tags["source_pipeline"] = request.source_pipeline
+        if request.source_run_id:
+            source_tags["source_run_id"] = request.source_run_id
+        if request.source_traceparent:
+            source_tags["source_traceparent"] = request.source_traceparent
+
         try:
             with integration_context(
                 tenant_id=request.tenant_id,
                 integration=request.feed_id,
                 integration_pipeline=request.group_name,
+                tags=source_tags,
             ):
                 if spec.batch:
                     await spec.handler([record])
@@ -605,7 +662,8 @@ async def deliver_classic(http_request: Request, request: DeliverClassicRequest)
                     await spec.handler(record)
         except Exception as e:
             logger.error(
-                f"deliver_classic handler failed for group={request.group_name}: {e}",
+                f"deliver_classic handler failed for feed={request.feed_id} "
+                f"group={request.group_name}: {e}",
                 exc_info=True,
             )
             raise HTTPException(

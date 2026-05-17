@@ -39,8 +39,6 @@ logger = logging.getLogger(__name__)
 MANAGED_JOB_COMMANDS = {
     "run-task",
     "register_schedules",
-    "consume-feed",
-    "consume-feed-batch",
 }
 
 
@@ -188,10 +186,15 @@ async def _run_job_task(func: Any, task_name: str, args: list, kwargs: dict) -> 
 
 def _cmd_register_schedules(deploy_id: str) -> None:
     """
-    Collect all locally registered scheduled tasks and POST them to the
-    Managed Platform API: POST /v1/deploy/{deploy_id}/register
+    Sync feed consumers and register all locally registered scheduled tasks
+    with the Managed Platform API: POST /v1/deploy/{deploy_id}/register
     """
     from flowstash.queue.backend import get_backend
+
+    api_url, auth_token = _resolve_managed_api_context()
+
+    # Always sync feed consumers first — even if there are no scheduled tasks.
+    _cmd_sync_feed_consumers(api_url, auth_token)
 
     backend = get_backend()
     registered_tasks = getattr(backend, "_registered_tasks", [])
@@ -201,13 +204,6 @@ def _cmd_register_schedules(deploy_id: str) -> None:
             "[register_schedules] No scheduled tasks registered — nothing to send."
         )
         sys.exit(0)
-
-    api_url = (
-        os.getenv("FLOWSTASH_API_URL")
-        or os.getenv("MANAGED_API_URL")
-        or "https://api.flowstash.dev"
-    ).rstrip("/")
-    auth_token = os.getenv("MANAGED_AUTH_TOKEN", "")
 
     tasks_payload = [
         {
@@ -245,31 +241,31 @@ def _cmd_register_schedules(deploy_id: str) -> None:
         sys.exit(1)
 
     logger.info("[register_schedules] Registration successful.")
-
-    _cmd_register_feed_consumers(api_url, auth_token)
-
     sys.exit(0)
 
 
-def _cmd_register_feed_consumers(api_url: str, auth_token: str) -> None:
-    """Register all locally registered @feed_consumer specs with the Managed Platform API."""
-    consumers = get_registered_consumers()
-    if not consumers:
-        return
+def _resolve_managed_api_context() -> tuple[str, str]:
+    """Return (api_url, auth_token) from environment variables."""
+    api_url = (
+        os.getenv("FLOWSTASH_API_URL")
+        or os.getenv("MANAGED_API_URL")
+        or "https://api.flowstash.dev"
+    ).rstrip("/")
+    auth_token = os.getenv("MANAGED_AUTH_TOKEN", "")
+    return api_url, auth_token
 
+
+def _build_feed_consumers_payload() -> dict:
+    """Build the full scoped snapshot payload from the local consumer registry."""
+    consumers = get_registered_consumers()
     by_feed: dict[str, list] = defaultdict(list)
     for spec in consumers:
         by_feed[spec.feed_id].append(spec)
 
-    with httpx.Client(
-        headers={
-            "Authorization": f"Bearer {auth_token}",
-            "Content-Type": "application/json",
-        },
-        timeout=30.0,
-    ) as client:
-        for feed_id, specs in by_feed.items():
-            payload = {
+    return {
+        "feeds": [
+            {
+                "feed_id": feed_id,
                 "consumers": [
                     {
                         "group_name": s.subscription_name,
@@ -278,23 +274,72 @@ def _cmd_register_feed_consumers(api_url: str, auth_token: str) -> None:
                         "max_delay_ms": s.max_delay_ms,
                     }
                     for s in specs
-                ]
+                ],
             }
-            try:
-                resp = client.post(
-                    f"{api_url}/v1/feed/{feed_id}/consumers/register",
-                    json=payload,
-                )
-                resp.raise_for_status()
-                logger.info(
-                    f"[register_feed_consumers] Registered {len(specs)} consumer(s) "
-                    f"for feed={feed_id}"
-                )
-            except Exception as e:
-                logger.warning(
-                    f"[register_feed_consumers] Failed to register consumers "
-                    f"for feed={feed_id}: {e}"
-                )
+            for feed_id, specs in by_feed.items()
+        ]
+    }
+
+
+def sync_feed_consumers(
+    api_url: str | None = None,
+    auth_token: str | None = None,
+    *,
+    strict: bool = True,
+) -> bool:
+    """
+    POST the full feed-consumer snapshot to the managed API.
+
+    Returns True on success.  When *strict* is True a failure raises SystemExit(1);
+    when *strict* is False a warning is logged and False is returned so the caller
+    can decide whether to continue.
+    """
+    if api_url is None or auth_token is None:
+        resolved_url, resolved_token = _resolve_managed_api_context()
+        api_url = api_url or resolved_url
+        auth_token = auth_token or resolved_token
+
+    payload = _build_feed_consumers_payload()
+    url = f"{api_url}/v1/feed/consumers/sync"
+    logger.info(
+        f"[sync_feed_consumers] Syncing {len(payload['feeds'])} feed(s) → {url}"
+    )
+
+    try:
+        with httpx.Client(
+            headers={
+                "Authorization": f"Bearer {auth_token}",
+                "Content-Type": "application/json",
+            },
+            timeout=30.0,
+        ) as client:
+            response = client.post(url, json=payload)
+            response.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        msg = (
+            f"[sync_feed_consumers] API returned {e.response.status_code}: "
+            f"{e.response.text}"
+        )
+        if strict:
+            logger.error(msg)
+            sys.exit(1)
+        logger.warning(msg)
+        return False
+    except Exception as e:
+        msg = f"[sync_feed_consumers] Request failed: {e}"
+        if strict:
+            logger.error(msg)
+            sys.exit(1)
+        logger.warning(msg)
+        return False
+
+    logger.info("[sync_feed_consumers] Sync successful.")
+    return True
+
+
+def _cmd_sync_feed_consumers(api_url: str, auth_token: str) -> None:
+    """Strict wrapper around sync_feed_consumers for job/CLI usage."""
+    sync_feed_consumers(api_url=api_url, auth_token=auth_token, strict=True)
 
 
 # ─── Consumer ────────────────────────────────────────────────────────
@@ -316,8 +361,9 @@ class ManagedConsumer(TaskConsumer):
 
         if not argv:
             logger.error(
-                "Managed consumer requires a command. "
-                "Commands: run-task <task_name> [args...] | register_schedules <deploy_id>"
+                "Managed consumer requires a command.\n"
+                "  run-task <task_name> [args...]\n"
+                "  register_schedules <deploy_id>"
             )
             sys.exit(1)
 
@@ -333,35 +379,10 @@ class ManagedConsumer(TaskConsumer):
             _cmd_register_schedules(deploy_id=argv[1])
             return  # sys.exit is called inside, but return for clarity
 
-        if command == "consume-feed":
-            if len(argv) < 2:
-                print(
-                    "Usage: worker_main.py consume-feed <base64_encoded_envelope>",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
-            from .feed_consumer import cmd_consume_feed
-
-            await cmd_consume_feed(argv[1])
-            return
-
-        if command == "consume-feed-batch":
-            if len(argv) < 2:
-                print(
-                    "Usage: worker_main.py consume-feed-batch <batch_id>",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
-            from .feed_consumer import cmd_consume_feed_batch
-
-            await cmd_consume_feed_batch(argv[1])
-            return
-
         if command != "run-task":
             logger.error(
                 f"Unknown command: {command!r}. "
-                "Commands: run-task <task_name> [args...] | register_schedules <deploy_id> | "
-                "consume-feed <base64_envelope> | consume-feed-batch <batch_id>"
+                "Commands: run-task <task_name> [args...] | register_schedules <deploy_id>"
             )
             sys.exit(1)
 
