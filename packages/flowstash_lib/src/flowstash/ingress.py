@@ -101,7 +101,10 @@ class Ingress:
                         )
 
                     # 1. Load state
-                    state = State.get(ingress_name, scope="ingress") or {}
+                    if kwargs.get("state") is not None:
+                        state = kwargs.pop("state")
+                    else:
+                        state = State.get(ingress_name, scope="ingress") or {}
 
                     # 2. Inject as first arg and call
                     try:
