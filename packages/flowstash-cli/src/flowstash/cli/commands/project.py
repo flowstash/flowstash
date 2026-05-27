@@ -11,6 +11,7 @@ import questionary
 from ..core.api_client import APIClient
 from ..core.config import (
     get_access_token,
+    resolve_credentials,
     load_project_config,
     save_project_config,
     ProjectConfig,
@@ -714,15 +715,15 @@ def init(
     console.print("[green]Initialization/Repair complete![/green]")
 
 
-def _link_project(config: ProjectConfig):
-    token = get_access_token()
+def _link_project(config: ProjectConfig, user: Optional[str] = None):
+    token = resolve_credentials(user=user)
     if not token:
         console.print(
             "[yellow]Not logged in. Use 'flowstash login' to link to a managed project.[/yellow]"
         )
         return
 
-    api = APIClient()
+    api = APIClient(token=token)
     try:
         projects_data = asyncio.run(api.get("/v1/projects"))
         projects = projects_data.get("projects", [])
@@ -756,7 +757,8 @@ def _link_project(config: ProjectConfig):
         user_info = asyncio.run(api.get("/v1/auth/me"))
         config.tenant_id = user_info["tenant_id"]
         config.user_email = user_info.get("email")
-    except:
+        config.linked_user = user_info.get("email")  # pin project to this account
+    except Exception:
         config.tenant_id = "default"
 
     config.project_id = project_id

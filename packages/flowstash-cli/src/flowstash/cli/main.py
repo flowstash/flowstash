@@ -242,6 +242,9 @@ def build(
     env: str = typer.Argument("dev", help="Environment to build (default: local)"),
     tag: str = typer.Option("latest", "--tag", "-t", help="Tag for the image"),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompts"),
+    user: Optional[str] = typer.Option(
+        None, "--user", "-u", help="Account to use (default: project-linked or current)"
+    ),
 ):
     """
     [bold yellow]Build[/bold yellow] project artifacts/images.
@@ -276,7 +279,7 @@ def build(
                 console.print(f"[red]Environment '{env}' not found.[/red]")
                 raise typer.Exit(code=1)
 
-    build_cmds.build(env=env, tag=tag)
+    build_cmds.build(env=env, tag=tag, user=user)
 
 
 @app.command()
@@ -287,6 +290,9 @@ def deploy(
         None, "--artifact", "-a", help="Artifact ID to deploy"
     ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompts"),
+    user: Optional[str] = typer.Option(
+        None, "--user", "-u", help="Account to use (default: project-linked or current)"
+    ),
 ):
     """
     [bold cyan]Deploy[/bold cyan] your project to the flowstash Managed Platform.
@@ -347,25 +353,43 @@ def deploy(
             )
             raise typer.Exit(code=1)
 
-    deploy_cmds.deploy(env=env, artifact=artifact, yes=yes)
+    deploy_cmds.deploy(env=env, artifact=artifact, yes=yes, user=user)
 
 
 @app.command()
-def whoami():
+def whoami(
+    user: Optional[str] = typer.Option(
+        None, "--user", "-u", help="Show status for a specific account"
+    ),
+):
     """Show current login status."""
-    auth_cmds.whoami()
+    auth_cmds.whoami(user=user)
 
 
 @app.command("logged-in")
-def logged_in():
+def logged_in(
+    user: Optional[str] = typer.Option(
+        None, "--user", "-u", help="Show status for a specific account"
+    ),
+):
     """Show who is currently logged in."""
-    auth_cmds.whoami()
+    auth_cmds.whoami(user=user)
 
 
 @app.command()
-def logout():
+def logout(
+    user: Optional[str] = typer.Option(
+        None, "--user", "-u", help="Account email to log out (default: current user)"
+    ),
+):
     """Log out from the platform."""
-    auth_cmds.logout()
+    auth_cmds.logout(user=user)
+
+
+@app.command()
+def accounts():
+    """List all logged-in accounts."""
+    auth_cmds.accounts()
 
 
 @app.command()

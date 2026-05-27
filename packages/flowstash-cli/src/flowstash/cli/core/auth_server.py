@@ -1,6 +1,7 @@
 from typing import Dict, Optional
 import threading
 import queue
+import socket
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
@@ -29,6 +30,21 @@ class CallbackHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         # Suppress logging
         pass
+
+def find_available_port(start: int = 8500, max_attempts: int = 10) -> int:
+    """Return the first free TCP port starting from *start*, trying up to *max_attempts* ports."""
+    for offset in range(max_attempts):
+        port = start + offset
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(("127.0.0.1", port))
+                return port
+            except OSError:
+                continue
+    raise RuntimeError(
+        f"No available port found in range {start}–{start + max_attempts - 1}"
+    )
+
 
 def start_callback_server(port: int = 8888) -> Dict[str, str]:
     server = HTTPServer(('127.0.0.1', port), CallbackHandler)

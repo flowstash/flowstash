@@ -1,3 +1,4 @@
+from typing import Optional
 import typer
 import asyncio
 import time
@@ -5,7 +6,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from ..core.api_client import APIClient
-from ..core.config import load_project_config
+from ..core.config import load_project_config, resolve_credentials
 from ..core.builder import bundle_source
 
 import subprocess
@@ -21,7 +22,7 @@ from ..core.docker_utils import (
 )
 
 
-async def run_managed_build(tag: str = "latest"):
+async def run_managed_build(tag: str = "latest", user: Optional[str] = None):
     project_config = load_project_config()
     if not project_config or not project_config.project_id:
         console.print(
@@ -29,7 +30,12 @@ async def run_managed_build(tag: str = "latest"):
         )
         raise typer.Exit(code=1)
 
-    api = APIClient()
+    token = resolve_credentials(user=user)
+    if not token:
+        console.print("[red]Not logged in. Run 'flowstash login' first.[/red]")
+        raise typer.Exit(code=1)
+
+    api = APIClient(token=token)
     # ... rest of existing managed build logic ...
     # (I'll keep the existing implementation but wrap it)
 
@@ -38,6 +44,9 @@ async def run_managed_build(tag: str = "latest"):
 def build(
     env: str = typer.Argument(..., help="Environment to build"),
     tag: str = typer.Option("latest", "--tag", "-t", help="Tag for the image"),
+    user: Optional[str] = typer.Option(
+        None, "--user", "-u", help="Account to use (default: project-linked or current)"
+    ),
 ):
     """Build project artifacts/images for the specified environment."""
     project_config = load_project_config()
@@ -51,7 +60,7 @@ def build(
                 break
 
     if is_managed:
-        result = asyncio.run(run_build_flow(tag))
+        result = asyncio.run(run_build_flow(tag, user=user))
         console.print(f"[green]Managed build completed successfully![/green]")
         console.print(f"Artifact ID: [bold]{result['artifact_id']}[/bold]")
     else:
@@ -82,11 +91,15 @@ def build(
             raise typer.Exit(code=1)
 
 
-async def run_build_flow(tag: str = "latest"):
+async def run_build_flow(tag: str = "latest", user: Optional[str] = None):
     # (Moved existing run_build_flow logic here for completeness in the file)
     project_config = load_project_config()
     project_id = project_config.project_id
-    api = APIClient()
+    token = resolve_credentials(user=user)
+    if not token:
+        console.print("[red]Not logged in. Run 'flowstash login' first.[/red]")
+        raise typer.Exit(code=1)
+    api = APIClient(token=token)
 
     try:
         with Progress(

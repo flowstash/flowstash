@@ -24,7 +24,7 @@ from rich.prompt import Prompt
 from rich.table import Table
 
 from ..core.api_client import APIClient
-from ..core.config import get_access_token
+from ..core.config import get_access_token, resolve_credentials
 
 app = typer.Typer(
     name="api-keys",
@@ -103,9 +103,10 @@ def _create_key(
     label: Optional[str],
     scope: Optional[str],
     env: Optional[str],
+    user: Optional[str] = None,
 ):
     """Shared implementation for 'new' and 'create'."""
-    token = get_access_token()
+    token = resolve_credentials(user=user)
     if not token:
         console.print("[red]Not logged in. Run 'flowstash login' first.[/red]")
         raise typer.Exit(code=1)
@@ -138,7 +139,7 @@ def _create_key(
         )
 
     async def _create():
-        api = APIClient()
+        api = APIClient(token=token)
         return await api.post("/v1/api-keys", json={"label": label, "scopes": [scope]})
 
     try:
@@ -175,9 +176,12 @@ def apikey_new(
     env: Optional[str] = typer.Option(
         None, "--env", "-e", help="Write key to this environment's .env file"
     ),
+    user: Optional[str] = typer.Option(
+        None, "--user", "-u", help="Account to use (default: project-linked or current)"
+    ),
 ):
     """Create a new API key and optionally write it to an environment .env file."""
-    _create_key(label=label, scope=scope, env=env)
+    _create_key(label=label, scope=scope, env=env, user=user)
 
 
 @app.command("create")
@@ -191,21 +195,28 @@ def apikey_create(
     env: Optional[str] = typer.Option(
         None, "--env", "-e", help="Write key to this environment's .env file"
     ),
+    user: Optional[str] = typer.Option(
+        None, "--user", "-u", help="Account to use (default: project-linked or current)"
+    ),
 ):
     """Create a new API key (alias for 'new')."""
-    _create_key(label=label, scope=scope, env=env)
+    _create_key(label=label, scope=scope, env=env, user=user)
 
 
 @app.command("list")
-def apikey_list():
+def apikey_list(
+    user: Optional[str] = typer.Option(
+        None, "--user", "-u", help="Account to use (default: project-linked or current)"
+    ),
+):
     """List all active API keys for the current tenant."""
-    token = get_access_token()
+    token = resolve_credentials(user=user)
     if not token:
         console.print("[red]Not logged in. Run 'flowstash login' first.[/red]")
         raise typer.Exit(code=1)
 
     async def _list():
-        api = APIClient()
+        api = APIClient(token=token)
         return await api.get("/v1/api-keys")
 
     try:
@@ -244,9 +255,12 @@ def apikey_list():
 def apikey_revoke(
     key_id: str = typer.Argument(..., help="Key ID to revoke (e.g. key-a3b2c1d4)"),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
+    user: Optional[str] = typer.Option(
+        None, "--user", "-u", help="Account to use (default: project-linked or current)"
+    ),
 ):
     """Revoke an API key immediately."""
-    token = get_access_token()
+    token = resolve_credentials(user=user)
     if not token:
         console.print("[red]Not logged in. Run 'flowstash login' first.[/red]")
         raise typer.Exit(code=1)
@@ -261,7 +275,7 @@ def apikey_revoke(
             return
 
     async def _revoke():
-        api = APIClient()
+        api = APIClient(token=token)
         return await api.delete(f"/v1/api-keys/{key_id}")
 
     try:

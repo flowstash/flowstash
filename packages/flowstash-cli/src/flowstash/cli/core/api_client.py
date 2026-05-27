@@ -4,13 +4,14 @@ from .config import load_global_config, get_access_token
 
 
 class APIClient:
-    def __init__(self):
+    def __init__(self, token: Optional[str] = None):
         self.config = load_global_config()
         self.base_url = self.config.api_url.rstrip("/")
+        self._token = token  # explicit token takes priority over resolved one
 
     def _get_headers(self) -> Dict[str, str]:
         headers = {}
-        token = get_access_token()
+        token = self._token if self._token is not None else get_access_token()
         if token:
             headers["Authorization"] = f"Bearer {token}"
         return headers

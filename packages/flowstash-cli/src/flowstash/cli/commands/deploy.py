@@ -5,7 +5,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from ..core.api_client import APIClient
-from ..core.config import load_project_config
+from ..core.config import load_project_config, resolve_credentials
 from .build import run_build_flow
 import flowstash.runtime
 
@@ -26,7 +26,7 @@ _STATUS_LABELS = {
 _TERMINAL_STATUSES = {"DEPLOYED", "FAILED"}
 
 
-async def run_deploy_flow(env: str, artifact_id: Optional[str] = None):
+async def run_deploy_flow(env: str, artifact_id: Optional[str] = None, user: Optional[str] = None):
     project_config = load_project_config()
     if not project_config:
         console.print(
@@ -39,12 +39,17 @@ async def run_deploy_flow(env: str, artifact_id: Optional[str] = None):
         console.print("[red]project_id not found in .flowstash[/red]")
         raise typer.Exit(code=1)
 
-    api = APIClient()
+    token = resolve_credentials(user=user)
+    if not token:
+        console.print("[red]Not logged in. Run 'flowstash login' first.[/red]")
+        raise typer.Exit(code=1)
+
+    api = APIClient(token=token)
 
     # 1. If artifact_id is not provided, run build first
     if not artifact_id:
         console.print("No artifact ID provided. Building first...")
-        build_result = await run_build_flow()
+        build_result = await run_build_flow(user=user)
         artifact_id = build_result["artifact_id"]
         console.print(f"Build finished. Deploying artifact: [bold]{artifact_id}[/bold]")
 
@@ -97,6 +102,9 @@ def deploy(
         None, "--artifact", "-a", help="Artifact ID to deploy"
     ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Do not ask for confirmation"),
+    user: Optional[str] = typer.Option(
+        None, "--user", "-u", help="Account to use (default: project-linked or current)"
+    ),
 ):
     """Deploy an artifact to the managed platform for a specified environment."""
     project_config = load_project_config()
@@ -140,7 +148,7 @@ def deploy(
             ):
                 from .project import _link_project
 
-                _link_project(project_config)
+                _link_project(project_config, user=user)
                 project_id = project_config.project_id
 
         if not project_id:
@@ -149,7 +157,7 @@ def deploy(
             )
             raise typer.Exit(code=1)
 
-    result = asyncio.run(run_deploy_flow(env, artifact))
+    result = asyncio.run(run_deploy_flow(env, artifact, user=user))
 
     api_url = result.get("api_url", "")
     console.print(f"[green]✓ Deployment complete![/green]")
