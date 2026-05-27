@@ -24,7 +24,9 @@ class APIClient:
             response.raise_for_status()
             return response.json()
 
-    async def post(self, path: str, json: Optional[Dict[str, Any]] = None, timeout: float = 30.0):
+    async def post(
+        self, path: str, json: Optional[Dict[str, Any]] = None, timeout: float = 30.0
+    ):
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
                 f"{self.base_url}{path}", json=json, headers=self._get_headers()

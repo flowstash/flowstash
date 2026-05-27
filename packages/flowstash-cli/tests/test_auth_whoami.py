@@ -127,4 +127,3 @@ def test_accounts_empty(monkeypatch):
 
     assert result.exit_code == 0
     assert "No accounts logged in" in result.stdout
-

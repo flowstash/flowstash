@@ -26,7 +26,9 @@ _STATUS_LABELS = {
 _TERMINAL_STATUSES = {"DEPLOYED", "FAILED"}
 
 
-async def run_deploy_flow(env: str, artifact_id: Optional[str] = None, user: Optional[str] = None):
+async def run_deploy_flow(
+    env: str, artifact_id: Optional[str] = None, user: Optional[str] = None
+):
     project_config = load_project_config()
     if not project_config:
         console.print(

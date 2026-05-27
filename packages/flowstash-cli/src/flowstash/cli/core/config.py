@@ -64,6 +64,7 @@ def save_global_config(config: GlobalConfig):
 # Per-user token helpers
 # ---------------------------------------------------------------------------
 
+
 def _user_token_key(email: str) -> str:
     return f"token:{email}"
 
@@ -139,6 +140,7 @@ def resolve_credentials(user: Optional[str] = None) -> Optional[str]:
 # ---------------------------------------------------------------------------
 # Legacy helpers (kept for backward compat / tests)
 # ---------------------------------------------------------------------------
+
 
 def get_access_token() -> Optional[str]:
     """Backward-compatible accessor. Prefer resolve_credentials() for new code."""
