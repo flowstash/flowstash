@@ -3,6 +3,7 @@ import inspect
 import asyncio
 import uuid
 import secrets
+from datetime import datetime
 from typing import Any, Callable, Optional, TypeVar, Awaitable, Union, Protocol, Mapping
 from .context import integration_context, current_context, IntegrationContext
 from opentelemetry import trace
@@ -283,13 +284,24 @@ class TaskWrapper:
         return self._emit_delegation_span_and_call_backend(ctx, args, kwargs)
 
     def schedule(
-        self, eta_or_delay: Union[int, float, Any], *args, **kwargs
+        self, eta_or_delay: Union[int, float, datetime], *args, **kwargs
     ) -> JobHandle:
-        """Schedule for future execution, recording a DELEGATED span in the current run."""
-        import time as _time
-        from datetime import datetime, UTC
+        """Schedule for future execution, recording a DELEGATED span in the current run.
 
-        schedule_time: Optional[Any] = None
+        Args:
+            eta_or_delay: Delay in seconds (``int`` or ``float``) or an explicit
+                ``datetime`` for the target execution time. When a numeric value
+                is given, it is treated as a delay in **seconds** from now.
+            *args: Positional arguments forwarded to the task function.
+            **kwargs: Keyword arguments forwarded to the task function.
+
+        Returns:
+            A :class:`JobHandle` for the scheduled job.
+        """
+        import time as _time
+        from datetime import UTC
+
+        schedule_time: Optional[datetime] = None
         if isinstance(eta_or_delay, (int, float)):
             schedule_time = datetime.fromtimestamp(
                 _time.time() + eta_or_delay / 1000.0, tz=UTC
