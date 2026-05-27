@@ -160,18 +160,32 @@ class AsyncioFeedBackend:
     Useful for testing and local development.
     """
 
+    def __init__(self):
+        # Tracks in-flight tasks keyed by "{subscription_name}:{dedupe_key}" to
+        # prevent double-processing the same record (mirrors Redis deduplication).
+        self._inflight: dict = {}
+
     async def publish(self, feed_id: str, record: Any) -> str:
         from ..pipelines.consumer import get_registered_consumers
         from ..context import get_context
         import inspect
 
+        ctx = get_context()
+        integration = ctx.integration if ctx else "unknown"
+        dedupe_key = record.get_dedupe_key(integration)
+
         consumers = get_registered_consumers()
         for spec in consumers:
             if spec.feed_id == feed_id:
-                # Prepare payload
+                inflight_key = f"{spec.subscription_name}:{dedupe_key}"
+                existing = self._inflight.get(inflight_key)
+                if existing is not None and not existing.done():
+                    # A task for this dedupe key is already running — skip.
+                    continue
+
                 payload = [record] if spec.batch else record
 
-                async def _run_consumer(handler, payload, name):
+                async def _run_consumer(handler, payload, name, _key=inflight_key):
                     try:
                         if inspect.iscoroutinefunction(handler):
                             await handler(payload)
@@ -181,11 +195,13 @@ class AsyncioFeedBackend:
                         logging.error(
                             f"Error in asyncio feed consumer {name}: {e}", exc_info=True
                         )
+                    finally:
+                        self._inflight.pop(_key, None)
 
-                asyncio.create_task(
+                task = asyncio.create_task(
                     _run_consumer(spec.handler, payload, spec.subscription_name)
                 )
+                self._inflight[inflight_key] = task
+                await task
 
-        ctx = get_context()
-        integration = ctx.integration if ctx else "unknown"
-        return record.get_dedupe_key(integration)
+        return dedupe_key
