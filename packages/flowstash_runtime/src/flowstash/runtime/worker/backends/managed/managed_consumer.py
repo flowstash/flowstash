@@ -203,7 +203,6 @@ def _cmd_register_schedules(deploy_id: str) -> None:
         logger.info(
             "[register_schedules] No scheduled tasks registered — nothing to send."
         )
-        sys.exit(0)
 
     tasks_payload = [
         {
