@@ -14,6 +14,7 @@ from typing import Optional
 import httpx
 
 from flowstash.pipelines.records_model import RecordData
+from flowstash.pipelines.record_serialization import to_jsonable
 from flowstash.context import get_context
 from flowstash.observability.ingestion import enqueue_record_link
 from flowstash.observability.model import RecordLinkKind
@@ -99,11 +100,11 @@ class ManagedFeedBackend:
         ts_val = effective_ts.timestamp()
 
         # BlobStore offloading for large payloads (>5 KB), matching Redis path
-        data_to_send = record.data
+        data_to_send = to_jsonable(record.data)
         blob_ref: Optional[str] = None
 
         try:
-            raw_data = json.dumps(record.data).encode("utf-8")
+            raw_data = json.dumps(data_to_send).encode("utf-8")
             if len(raw_data) > _BLOB_OFFLOAD_THRESHOLD_BYTES:
                 from flowstash.observability.registry import get_blob_store
 

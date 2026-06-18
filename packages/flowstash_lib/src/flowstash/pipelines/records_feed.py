@@ -5,6 +5,7 @@ from typing import Optional, Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 from .records_model import RecordData
+from .record_serialization import to_jsonable
 from .redis_client import get_redis_client
 from ..context import get_context, integration_context
 from ..observability.ingestion import enqueue_record_link
@@ -91,10 +92,10 @@ class RecordsFeed:
         ts_val = effective_ts.timestamp()
 
         # Externalize large data to BlobStore (> 5KB)
-        data_to_store = record.data
+        data_to_store = to_jsonable(record.data)
         blob_ref = None
 
-        raw_data = json.dumps(record.data).encode("utf-8")
+        raw_data = json.dumps(data_to_store).encode("utf-8")
         if len(raw_data) > 5120:
             try:
                 # Use a specific path in blob store for feed records

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, UTC
 from typing import Any, Callable, List, Union, Optional, Dict
 from .records_model import RecordData
+from .record_serialization import from_jsonable
 from .redis_client import get_redis_client
 from ..context import integration_context, current_context
 from ..observability.ingestion import enqueue_record_link
@@ -26,6 +27,8 @@ class ConsumerSpec:
     rate_limit_per_sec: Optional[int]
     concurrency: Optional[int]
     schedule: Optional[str] = None
+    debounce_delay_ms: int = 0  # 0 = disabled; classic (non-batched) consumers only
+    max_debounce_window_ms: int = 0  # 0 = default cap; sliding-window upper bound
 
 _consumers: List[ConsumerSpec] = []
 
@@ -42,11 +45,23 @@ def feed_consumer(
     rate_limit_per_sec: Optional[int] = None,
     concurrency: Optional[int] = None,
     schedule: Optional[str] = None,
+    debounce_delay_ms: int = 0,
+    max_debounce_window_ms: int = 0,
 ):
 
     """
     Decorator for record consumers.
+
+    debounce_delay_ms: when > 0 (classic/non-batched consumers only), collapses a
+        burst of events sharing a dedupe_key into a single delivery of the latest
+        payload, fired once arrivals quiet down for this many ms (sliding window).
+    max_debounce_window_ms: upper bound on how long a key can be debounced before
+        it is forcibly delivered (0 = use platform default cap).
     """
+    if debounce_delay_ms and batch:
+        raise ValueError(
+            "debounce_delay_ms is only supported on classic (non-batched) consumers"
+        )
     def decorator(func: Callable):
         @functools.wraps(func)
         async def async_wrapper(records: Union[RecordData, List[RecordData]], *args, **kwargs):
@@ -142,7 +157,9 @@ def feed_consumer(
             max_delay_ms=max_delay_ms,
             rate_limit_per_sec=rate_limit_per_sec,
             concurrency=concurrency,
-            schedule=schedule
+            schedule=schedule,
+            debounce_delay_ms=debounce_delay_ms,
+            max_debounce_window_ms=max_debounce_window_ms,
         ))
         
         return target_wrapper
@@ -263,7 +280,7 @@ class ConsumerRunner:
                         return RecordData(
                             record_id=snap_data["record_id"],
                             record_type=snap_data["record_type"],
-                            data=record_data,
+                            data=from_jsonable(record_data),
                             timestamp=datetime.fromisoformat(snap_data["timestamp"]) if snap_data["timestamp"] else None,
                             dedupe_key=snap_data.get("dedupe_key"),
                             source_integration=snap_data.get("source_integration"),

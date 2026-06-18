@@ -1,9 +1,11 @@
 import asyncio
+import json
 import uuid
 from typing import Any, Callable, Optional, Mapping, List, Union
 from .backend import TaskBackend, JobHandle, Schedule
 from ..context import IntegrationContext, current_context, integration_context
 from ..observability.ingestion import normalize_arguments
+from ..pipelines.record_serialization import from_jsonable, to_jsonable
 import logging
 
 
@@ -183,7 +185,23 @@ class AsyncioFeedBackend:
                     # A task for this dedupe key is already running — skip.
                     continue
 
-                payload = [record] if spec.batch else record
+                # Round-trip data through JSON to mirror prod behaviour (catches
+                # serialisation errors early and ensures consumers receive plain
+                # dicts / reconstructed pydantic models, not live Python objects).
+                from ..pipelines.records_model import RecordData as _RecordData
+                round_tripped_data = from_jsonable(json.loads(json.dumps(to_jsonable(record.data))))
+                delivered = _RecordData(
+                    record_id=record.record_id,
+                    record_type=record.record_type,
+                    data=round_tripped_data,
+                    timestamp=record.timestamp,
+                    dedupe_key=record.dedupe_key,
+                    source_integration=record.source_integration,
+                    source_pipeline=record.source_pipeline,
+                    source_run_id=record.source_run_id,
+                    source_traceparent=record.source_traceparent,
+                )
+                payload = [delivered] if spec.batch else delivered
 
                 async def _run_consumer(handler, payload, name, _key=inflight_key):
                     try:

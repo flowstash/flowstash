@@ -29,6 +29,7 @@ import httpx
 
 from flowstash.context import integration_context
 from flowstash.observability.ingestion import AsyncManager
+from flowstash.pipelines.record_serialization import from_jsonable
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +168,7 @@ async def _resolve_record_from_item(item: dict):
     return RecordData(
         record_id=item.get("record_id") or item.get("dedupe_key"),
         record_type=item.get("record_type") or "managed",
-        data=data,
+        data=from_jsonable(data),
         timestamp=datetime.fromtimestamp(ts, tz=UTC) if ts else None,
         dedupe_key=item.get("dedupe_key"),
         source_integration=item.get("source_integration"),

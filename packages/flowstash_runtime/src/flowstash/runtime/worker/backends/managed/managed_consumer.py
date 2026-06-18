@@ -271,6 +271,8 @@ def _build_feed_consumers_payload() -> dict:
                         "batch": s.batch,
                         "max_batch_size": s.max_batch_size,
                         "max_delay_ms": s.max_delay_ms,
+                        "debounce_delay_ms": s.debounce_delay_ms,
+                        "max_debounce_window_ms": s.max_debounce_window_ms,
                     }
                     for s in specs
                 ],
