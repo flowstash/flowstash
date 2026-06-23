@@ -12,6 +12,7 @@ Feed endpoints:
 
 import logging
 import os
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, UTC
 from typing import Any, Dict, List, Optional
@@ -81,9 +82,12 @@ class TaskPayload(BaseModel):
     pipeline: Optional[str] = None
     triggered_by: Optional[str] = None
     cron: Optional[str] = None
-    # run_id is kept for backward compatibility with older payloads that carry it,
-    # but it is NOT used as the execution run_id. The execution side always allocates
-    # a fresh run_id. Causal metadata is carried in the `delegation` field instead.
+    # run_id is pre-allocated by the platform at submit time and travels in BOTH the
+    # payload and the request URL (?run_id=...). The execution side USES it as the run_id
+    # so the id is known up-front and is STABLE across Cloud Tasks redeliveries — that lets
+    # Cloud Run failure logs (which include the URL's run_id) be joined back to this run.
+    # Older payloads that omit it fall back to a freshly generated id. Causal metadata is
+    # carried in the `delegation` field instead.
     run_id: Optional[str] = None
     tags: Optional[Dict[str, Any]] = None
     delegation: Optional[DelegationMetadataModel] = None
@@ -207,9 +211,17 @@ async def _execute_managed_task(payload: TaskPayload) -> dict:
     kwargs = payload.effective_kwargs()
     raw_args = {"args": args, "kwargs": kwargs}
 
+    # Use the run_id pre-allocated by the platform (carried in the payload and the
+    # request URL). It is known up-front and STABLE across Cloud Tasks redeliveries, so
+    # all retries of one task share a run_id (collapsing to a single run) and Cloud Run
+    # failure logs — which include the URL's run_id — can be joined back to this run.
+    # Fall back to a fresh id for older payloads that don't carry one.
+    execution_run_id = payload.run_id or str(uuid.uuid4())
+
     with integration_context(
         integration=integration,
         integration_pipeline=pipeline,
+        run_id=execution_run_id,
         parent_run_id=parent_run_id,
         operation_id=operation_id,
         tags=tags,
@@ -254,6 +266,10 @@ async def _execute_managed_task(payload: TaskPayload) -> dict:
                 correlation=ctx.corelation,
                 attrs={"error": error, "traceback": tb},
             )
+            # Re-raise so the run ends as FAILED only (not ALSO SUCCEEDED) and the handler
+            # returns 500 → Cloud Tasks retries the delivery. Without this, a raising task
+            # was recorded as both FAILED and SUCCEEDED and the worker returned 200.
+            raise
 
         await record_run_ended(
             status="SUCCEEDED",
@@ -300,6 +316,14 @@ async def handle_task(request: Request, payload: TaskPayload):
             return JSONResponse(
                 status_code=status.HTTP_404_NOT_FOUND,
                 content={"status": "TASK_NOT_FOUND", "detail": str(e)},
+            )
+        except Exception as e:
+            # Task execution failed (already recorded as FAILED on the run). Return 500 so
+            # Cloud Tasks retries the delivery; the request scope still releases its slot
+            # and flushes observability in its finally block.
+            return JSONResponse(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                content={"detail": {"status": "FAILED", "error": str(e)}},
             )
 
 
