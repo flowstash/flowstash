@@ -14,6 +14,7 @@ import logging
 import os
 import sys
 import traceback
+import uuid
 from typing import Any
 
 from collections import defaultdict
@@ -32,6 +33,14 @@ from flowstash.observability.ingestion import (
 from flowstash.queue.consumer import TaskConsumer
 
 from .task_resolver import _invoke_task_callable, resolve_function
+from .lease_client import (
+    get_lease_client,
+    ACQUIRED,
+    BUSY,
+    COMPLETED,
+    SUCCEEDED,
+    FAILED,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -146,13 +155,16 @@ async def _record_missing_task(task_name: str) -> None:
         )
 
 
-async def _run_job_task(func: Any, task_name: str, args: list, kwargs: dict) -> bool:
+async def _run_job_task(
+    func: Any, task_name: str, args: list, kwargs: dict, run_id: str | None = None
+) -> bool:
     """Execute the resolved task within an integration_context. Returns True on success."""
     normalized_args = normalize_arguments(func, args, kwargs)
 
     with integration_context(
         integration="managed-job",
         integration_pipeline=task_name,
+        run_id=run_id,
         record_lifecycle=False,
     ) as ctx:
         await record_run_started(
@@ -388,7 +400,11 @@ class ManagedConsumer(TaskConsumer):
             sys.exit(1)
 
         task_name, args, kwargs = _parse_cli_args(argv[1:])
-        logger.info(f"[run-task] Resolving task: {task_name!r}")
+        # Stable run_id injected by the platform at schedule time (FLOWSTASH_RUN_ID).
+        # It is identical across Cloud Run Job retries of one execution, so the lease
+        # guard collapses duplicate executions of the same logical run.
+        run_id = os.getenv("FLOWSTASH_RUN_ID") or str(uuid.uuid4())
+        logger.info(f"[run-task] Resolving task: {task_name!r} (run_id={run_id})")
 
         try:
             func = resolve_function(task_name)
@@ -398,10 +414,41 @@ class ManagedConsumer(TaskConsumer):
             await asyncio.to_thread(AsyncManager.get_instance().flush, 15.0)
             sys.exit(1)
 
+        # Idempotency guard via the lease broker. Unlike HTTP tasks, a job that
+        # exits has no automatic redelivery, so on BUSY/COMPLETED we exit 0 (another
+        # execution owns it / it is already done) and on UNAVAILABLE we fail OPEN
+        # (run anyway) rather than silently drop the work.
+        lease = get_lease_client()
+        lease_held = False
+        if lease is not None:
+            res = await lease.acquire(run_id, entry_point=task_name)
+            if res.outcome in (COMPLETED, BUSY):
+                logger.info(
+                    "[run-task] run %s not started (%s) — another execution owns it",
+                    run_id,
+                    res.outcome,
+                )
+                await asyncio.to_thread(AsyncManager.get_instance().flush, 15.0)
+                sys.exit(0)
+            elif res.outcome == ACQUIRED:
+                lease_held = True
+            else:
+                # UNAVAILABLE (broker unreachable) or RECOVERING (broker restarting).
+                # A job has no automatic redelivery, so fail OPEN (run unguarded)
+                # rather than silently drop the work; duplicates here are rare.
+                logger.warning(
+                    "[run-task] lease not granted (%s) — running run %s without guard",
+                    res.outcome,
+                    run_id,
+                )
+
         logger.info(
             f"[run-task] Executing task: {task_name!r}, args={args}, kwargs={kwargs}"
         )
-        success = await _run_job_task(func, task_name, args, kwargs)
+        success = await _run_job_task(func, task_name, args, kwargs, run_id=run_id)
+
+        if lease_held:
+            await lease.release(run_id, SUCCEEDED if success else FAILED)
 
         await asyncio.to_thread(AsyncManager.get_instance().flush, 15.0)
         sys.exit(0 if success else 1)

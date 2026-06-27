@@ -34,6 +34,12 @@ from .task_resolver import (
     resolve_function as _registry_resolve,
     _invoke_task_callable,
 )
+from .lease_client import (
+    get_lease_client,
+    LeaseBusy,
+    SUCCEEDED as LEASE_SUCCEEDED,
+    FAILED as LEASE_FAILED,
+)
 from flowstash.pipelines.record_serialization import from_jsonable
 
 logger = logging.getLogger(__name__)
@@ -218,63 +224,91 @@ async def _execute_managed_task(payload: TaskPayload) -> dict:
     # Fall back to a fresh id for older payloads that don't carry one.
     execution_run_id = payload.run_id or str(uuid.uuid4())
 
-    with integration_context(
-        integration=integration,
-        integration_pipeline=pipeline,
-        run_id=execution_run_id,
-        parent_run_id=parent_run_id,
-        operation_id=operation_id,
-        tags=tags,
-        attrs={"args": raw_args},
-        record_lifecycle=False,
-    ) as ctx:
-        try:
-            func = _resolve_task_callable(
-                payload.task_name or payload.task_id, func_ref
+    # Idempotency guard: claim an exclusive lease on this run_id from the broker so a
+    # Cloud Tasks redelivery (or a concurrent duplicate) never re-executes a run that is
+    # already running or just completed. Disabled-safe: get_lease_client() returns None
+    # when the broker isn't configured; an unreachable broker yields UNAVAILABLE → we
+    # fail closed with a retryable 503 rather than risk a duplicate.
+    lease = get_lease_client()
+    lease_held = False
+    if lease is not None:
+        res = await lease.acquire(execution_run_id, entry_point=entry_point)
+        if res.duplicate:
+            logger.info(
+                "run %s already completed — skipping redelivery", execution_run_id
             )
-        except ValueError as e:
-            logger.warning(f"Could not resolve task '{entry_point}': {e}")
+            return {"status": "duplicate", "run_id": execution_run_id, "task": func_ref}
+        if not res.acquired:
+            # BUSY (held elsewhere), RECOVERING (broker restarting), or UNAVAILABLE
+            # (broker unreachable) — all map to a retryable 503. Only ACQUIRED runs.
+            raise LeaseBusy(execution_run_id)
+        lease_held = True
+
+    lease_status = LEASE_FAILED
+    try:
+        with integration_context(
+            integration=integration,
+            integration_pipeline=pipeline,
+            run_id=execution_run_id,
+            parent_run_id=parent_run_id,
+            operation_id=operation_id,
+            tags=tags,
+            attrs={"args": raw_args},
+            record_lifecycle=False,
+        ) as ctx:
+            try:
+                func = _resolve_task_callable(
+                    payload.task_name or payload.task_id, func_ref
+                )
+            except ValueError as e:
+                logger.warning(f"Could not resolve task '{entry_point}': {e}")
+                await record_run_started(
+                    correlation=ctx.corelation,
+                    entry_point=entry_point,
+                    attrs={"args": raw_args},
+                )
+                await record_run_ended(
+                    status="FAILED",
+                    correlation=ctx.corelation,
+                    attrs={"error": str(e), "task_resolution_failed": True},
+                )
+                raise
+
+            normalized_args = normalize_arguments(func, args, kwargs)
             await record_run_started(
                 correlation=ctx.corelation,
                 entry_point=entry_point,
-                attrs={"args": raw_args},
+                attrs={"args": normalized_args},
             )
+
+            try:
+                await _invoke_task_callable(func, args, kwargs)
+            except Exception as e:
+                import traceback
+
+                error = str(e)
+                tb = traceback.format_exc()
+                logger.error(f"Task execution failed: {func_ref}: {e}", exc_info=True)
+                await record_run_ended(
+                    status="FAILED",
+                    correlation=ctx.corelation,
+                    attrs={"error": error, "traceback": tb},
+                )
+                # Re-raise so the run ends as FAILED only (not ALSO SUCCEEDED) and the handler
+                # returns 500 → Cloud Tasks retries the delivery. Without this, a raising task
+                # was recorded as both FAILED and SUCCEEDED and the worker returned 200.
+                raise
+
             await record_run_ended(
-                status="FAILED",
+                status="SUCCEEDED",
                 correlation=ctx.corelation,
-                attrs={"error": str(e), "task_resolution_failed": True},
             )
-            raise
-
-        normalized_args = normalize_arguments(func, args, kwargs)
-        await record_run_started(
-            correlation=ctx.corelation,
-            entry_point=entry_point,
-            attrs={"args": normalized_args},
-        )
-
-        try:
-            await _invoke_task_callable(func, args, kwargs)
-        except Exception as e:
-            import traceback
-
-            error = str(e)
-            tb = traceback.format_exc()
-            logger.error(f"Task execution failed: {func_ref}: {e}", exc_info=True)
-            await record_run_ended(
-                status="FAILED",
-                correlation=ctx.corelation,
-                attrs={"error": error, "traceback": tb},
-            )
-            # Re-raise so the run ends as FAILED only (not ALSO SUCCEEDED) and the handler
-            # returns 500 → Cloud Tasks retries the delivery. Without this, a raising task
-            # was recorded as both FAILED and SUCCEEDED and the worker returned 200.
-            raise
-
-        await record_run_ended(
-            status="SUCCEEDED",
-            correlation=ctx.corelation,
-        )
+            lease_status = LEASE_SUCCEEDED
+    finally:
+        if lease_held:
+            # SUCCEEDED → completed-set tombstone (skips post-completion redeliveries);
+            # FAILED → free the lease so Cloud Tasks can genuinely retry.
+            await lease.release(execution_run_id, lease_status)
 
     return {
         "status": "ok",
@@ -316,6 +350,15 @@ async def handle_task(request: Request, payload: TaskPayload):
             return JSONResponse(
                 status_code=status.HTTP_404_NOT_FOUND,
                 content={"status": "TASK_NOT_FOUND", "detail": str(e)},
+            )
+        except LeaseBusy as e:
+            # Lease held elsewhere (or broker unreachable). 503 is retryable by
+            # Cloud Tasks (unlike a 4xx), so the redelivery becomes the liveness
+            # backstop: by the next attempt the holder has finished (→ COMPLETED)
+            # or its lease expired (→ this attempt acquires it).
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={"status": "LEASE_HELD", "run_id": e.run_id},
             )
         except Exception as e:
             # Task execution failed (already recorded as FAILED on the run). Return 500 so

@@ -71,6 +71,12 @@ app.add_typer(
     no_args_is_help=True,
 )
 
+app.add_typer(
+    deploy_cmds.app,
+    name="deploy",
+    help="Deploy your project, or configure deployment ('configure')",
+)
+
 
 @app.command()
 def help(ctx: typer.Context):
@@ -280,80 +286,6 @@ def build(
                 raise typer.Exit(code=1)
 
     build_cmds.build(env=env, tag=tag, user=user)
-
-
-@app.command()
-def deploy(
-    ctx: typer.Context,
-    env: str = typer.Argument("prod", help="Environment to deploy to (default: prod)"),
-    artifact: Optional[str] = typer.Option(
-        None, "--artifact", "-a", help="Artifact ID to deploy"
-    ),
-    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompts"),
-    user: Optional[str] = typer.Option(
-        None, "--user", "-u", help="Account to use (default: project-linked or current)"
-    ),
-):
-    """
-    [bold cyan]Deploy[/bold cyan] your project to the flowstash Managed Platform.
-
-    Defaults to the 'prod' environment. If 'prod' is missing, it will prompt you to set it up.
-
-    [yellow]Note:[/yellow] To deploy to a specific environment, use: [bold]flowstash deploy <env_name>[/bold]
-    """
-    from .core.config import load_project_config
-    from .commands.project import add_environment
-    from rich.prompt import Confirm
-
-    if ctx.get_parameter_source("env") == click.core.ParameterSource.DEFAULT:
-        console.print(
-            f"[dim]Env argument not specified... using [bold]{env}[/bold] as default[/dim]"
-        )
-
-    project_config = load_project_config()
-    if not project_config:
-        console.print(
-            "[red]No .flowstash found. Please run 'flowstash init' first.[/red]"
-        )
-        raise typer.Exit(code=1)
-
-    # Find the requested environment
-    env_mode = next((e for e in project_config.environments if e.name == env), None)
-
-    if not env_mode:
-        if env == "prod":
-            if yes or Confirm.ask(
-                f"Environment '{env}' not found. Would you like to set it up now?"
-            ):
-                # We need to pass the actual project_config object to add_environment
-                # But project_cmds is a module, we should be careful about cyclic imports or just use it.
-                project_cmds.add_environment(project_config, env_name=env)
-                # Reload or refresh check
-                project_config = load_project_config()
-                env_mode = next(
-                    (e for e in project_config.environments if e.name == env), None
-                )
-                if not env_mode:
-                    console.print(
-                        f"[red]Environment '{env}' was not created. Aborting.[/red]"
-                    )
-                    raise typer.Exit(code=1)
-            else:
-                console.print(
-                    f"[red]Aborting. Use 'flowstash env add' to create environments manually.[/red]"
-                )
-                raise typer.Exit(code=1)
-        else:
-            console.print(f"[red]Environment '{env}' not found.[/red]")
-            console.print(
-                f"[yellow]Available environments: {', '.join(e.name for e in project_config.environments)}[/yellow]"
-            )
-            console.print(
-                f"To deploy to a specific environment, use: [bold]flowstash deploy <env_name>[/bold]"
-            )
-            raise typer.Exit(code=1)
-
-    deploy_cmds.deploy(env=env, artifact=artifact, yes=yes, user=user)
 
 
 @app.command()

@@ -66,6 +66,47 @@ def test_logger_exception():
             _, k = mock_enqueue.call_args
             assert k["levelno"] == logging.ERROR
             assert k["exc_info"] is True
+            # The traceback must be folded into the captured message, not dropped.
+            assert "Oops" in k["message"]
+            assert "Traceback (most recent call last):" in k["message"]
+            assert "ValueError: Boom" in k["message"]
+
+
+def test_logger_exception_no_active_exception():
+    """logger.exception outside an except block keeps the message, adds no trace."""
+    with integration_context(integration="test-int"):
+        with patch("flowstash.observability.logging.enqueue_log_event") as mock_enqueue:
+            logger.exception("no active exception")
+
+            mock_enqueue.assert_called_once()
+            _, k = mock_enqueue.call_args
+            assert k["message"] == "no active exception"
+            assert "Traceback" not in k["message"]
+
+
+def test_global_handler_captures_traceback():
+    """
+    Standard logging.exception() captured via the root handler path must also
+    include the formatted traceback in the message (record.exc_info is a tuple).
+    """
+    from flowstash.observability.logging import setup_global_logging
+    setup_global_logging()
+
+    std_logger = logging.getLogger("test.exc.external")
+
+    with integration_context(integration="test-int"):
+        with patch("flowstash.observability.logging.enqueue_log_event") as mock_enqueue:
+            try:
+                raise RuntimeError("kaboom")
+            except RuntimeError:
+                std_logger.exception("external failure")
+
+            mock_enqueue.assert_called_once()
+            _, k = mock_enqueue.call_args
+            assert k["levelno"] == logging.ERROR
+            assert "external failure" in k["message"]
+            assert "Traceback (most recent call last):" in k["message"]
+            assert "RuntimeError: kaboom" in k["message"]
 
 def test_enqueue_log_event_filtering():
     """Verify filtering logic in enqueue_log_event."""
@@ -190,3 +231,64 @@ def test_global_handler_exc_info_false_for_no_exception():
             mock_enqueue.assert_called_once()
             _, k = mock_enqueue.call_args
             assert k["exc_info"] is False
+
+
+def test_resolve_min_levelno():
+    """The root-logger gate must resolve the configured min_level (case-insensitively)."""
+    import flowstash.observability.logging as flog
+
+    set_observability_config(ObservabilityConfig(logging=LoggingConfig(min_level="DEBUG")))
+    assert flog._resolve_min_levelno() == logging.DEBUG
+
+    set_observability_config(ObservabilityConfig(logging=LoggingConfig(min_level="warning")))
+    assert flog._resolve_min_levelno() == logging.WARNING
+
+    set_observability_config(ObservabilityConfig(logging=LoggingConfig(min_level="INFO")))
+    assert flog._resolve_min_levelno() == logging.INFO
+
+    # Unknown level name falls back to INFO rather than enabling everything.
+    set_observability_config(ObservabilityConfig(logging=LoggingConfig(min_level="BOGUS")))
+    assert flog._resolve_min_levelno() == logging.INFO
+
+
+def test_root_level_gates_inherited_debug():
+    """
+    setup_global_logging() must gate the root logger at the observability min_level,
+    not NOTSET. NOTSET makes the root's effective level 0, enabling DEBUG for every
+    logger that inherits the root level (e.g. pymongo heartbeats) so those records
+    flood the handler and stdout. With the gate at min_level they are dropped at the
+    source, while INFO+ records still reach the handler.
+    """
+    import sys
+    import flowstash.observability.logging as flog
+
+    root = logging.getLogger()
+    saved_level = root.level
+    saved_handlers = root.handlers[:]
+    saved_flag = flog._global_logging_setup
+    saved_stdout, saved_stderr = sys.stdout, sys.stderr
+    try:
+        # Force a clean re-setup with a known floor.
+        set_observability_config(ObservabilityConfig(logging=LoggingConfig(min_level="INFO")))
+        root.handlers = []
+        flog._global_logging_setup = False
+        flog.setup_global_logging()
+
+        # Root is pinned to the floor, not NOTSET — otherwise DEBUG leaks globally.
+        assert root.level == logging.INFO
+
+        inheriting = logging.getLogger("third_party.inheriting")
+        inheriting.setLevel(logging.NOTSET)  # inherit the root level
+
+        with integration_context(integration="test-int"):
+            with patch("flowstash.observability.logging.enqueue_log_event") as mock_enqueue:
+                inheriting.debug("noisy heartbeat")  # below floor -> never created
+                assert mock_enqueue.call_count == 0
+
+                inheriting.info("meaningful event")  # at/above floor -> captured
+                assert mock_enqueue.call_count == 1
+    finally:
+        root.handlers = saved_handlers
+        root.level = saved_level
+        flog._global_logging_setup = saved_flag
+        sys.stdout, sys.stderr = saved_stdout, saved_stderr

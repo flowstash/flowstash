@@ -4,6 +4,7 @@ Task registry, function resolution, and callable dispatch.
 Shared by the managed job consumer.
 """
 
+import asyncio
 import importlib
 import inspect
 import logging
@@ -48,14 +49,23 @@ def resolve_function(func_ref: str) -> Any:
 
 
 async def _invoke_task_callable(func: Any, args: list, kwargs: dict) -> Any:
-    """Dispatch a task callable regardless of its wrapper type."""
+    """Dispatch a task callable regardless of its wrapper type.
+
+    Sync callables are run via ``asyncio.to_thread`` rather than inline: a
+    multi-minute sync task would otherwise block the single worker event loop and
+    starve all other concurrent requests on the instance — the very condition that
+    triggers Cloud Tasks' connection resets/retries — and would also freeze the
+    lease WebSocket. ``asyncio.to_thread`` copies the current ``contextvars``
+    context into the worker thread, so the ``integration_context`` / ``run_id``
+    remain visible to the task and its observability.
+    """
     if hasattr(func, "run"):
         return await func.run(*args, **kwargs)
     if hasattr(func, "func"):
         underlying = func.func
         if inspect.iscoroutinefunction(underlying):
             return await underlying(*args, **kwargs)
-        return underlying(*args, **kwargs)
+        return await asyncio.to_thread(underlying, *args, **kwargs)
     if inspect.iscoroutinefunction(func):
         return await func(*args, **kwargs)
-    return func(*args, **kwargs)
+    return await asyncio.to_thread(func, *args, **kwargs)

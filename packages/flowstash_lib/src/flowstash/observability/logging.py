@@ -1,6 +1,8 @@
 import logging
 import os
+import sys
 import threading
+import traceback
 from typing import Any, Dict, Optional, Union
 from ..context import get_context
 from .ingestion import enqueue_log_event, get_observability_config
@@ -22,6 +24,58 @@ def _passthrough_enabled() -> bool:
         return get_observability_config().logging.passthrough
     except Exception:
         return True
+
+
+def _resolve_min_levelno() -> int:
+    """Resolve the configured observability ``min_level`` to a numeric logging level.
+
+    Falls back to INFO when the config can't be read or the level name is unknown.
+    Mirrors the resolution used by ``enqueue_log_event`` so the root-logger gate and
+    the ingestion filter agree on what counts as "below the floor".
+    """
+    try:
+        min_level = get_observability_config().logging.min_level
+    except Exception:
+        return logging.INFO
+    if isinstance(min_level, str):
+        return getattr(logging, min_level.upper(), logging.INFO)
+    if isinstance(min_level, int):
+        return min_level
+    return logging.INFO
+
+
+def _format_exc_info(exc_info: Any) -> Optional[str]:
+    """Format an ``exc_info`` value into a traceback string, or None.
+
+    Accepts the same shapes stdlib logging accepts for ``exc_info``: a truthy
+    flag (resolve via ``sys.exc_info()``), a ``BaseException`` instance, or a
+    ``(type, value, tb)`` tuple. Returns None when there is no usable exception.
+    """
+    if not exc_info:
+        return None
+    if isinstance(exc_info, BaseException):
+        exc_info = (type(exc_info), exc_info, exc_info.__traceback__)
+    elif not isinstance(exc_info, tuple):
+        # exc_info is True (or otherwise truthy) -> use the active exception.
+        exc_info = sys.exc_info()
+    if not exc_info or exc_info[0] is None:
+        return None
+    return "".join(traceback.format_exception(*exc_info)).rstrip("\n")
+
+
+def _append_exc_text(message: str, exc_info: Any) -> str:
+    """Fold a formatted traceback into the message, like logging.Formatter does.
+
+    Observability's ``write_log(message, attrs)`` has no dedicated traceback
+    field, so we append the trace to the captured message (separated by a single
+    newline) instead of losing it. No-op when there is no exception.
+    """
+    exc_text = _format_exc_info(exc_info)
+    if not exc_text:
+        return message
+    if message and not message.endswith("\n"):
+        message = message + "\n"
+    return message + exc_text
 
 
 class IntegrationLogger:
@@ -89,12 +143,17 @@ class IntegrationLogger:
             if isinstance(extra, dict):
                 attrs.update(extra)
 
+            # Fold any traceback into the message — exc_info here is typically
+            # True (logger.exception sets it), so resolve it via sys.exc_info().
+            exc_info = kwargs.get("exc_info")
+            formatted_msg = _append_exc_text(formatted_msg, exc_info)
+
             enqueue_log_event(
                 logger_name=self._python_logger.name,
                 levelno=level,
                 message=formatted_msg,
                 attrs=attrs,
-                exc_info=bool(kwargs.get("exc_info"))
+                exc_info=bool(exc_info)
             )
 
             if _passthrough_enabled():
@@ -131,10 +190,13 @@ def setup_global_logging():
                 return
 
             try:
+                # record.exc_info is already a (type, value, tb) tuple here; fold
+                # the formatted traceback into the message so the sink keeps it.
+                message = _append_exc_text(record.getMessage(), record.exc_info)
                 enqueue_log_event(
                     logger_name=record.name,
                     levelno=record.levelno,
-                    message=record.getMessage(),
+                    message=message,
                     attrs=getattr(record, "attrs", None),
                     exc_info=record.exc_info is not None and record.exc_info[0] is not None,
                 )
@@ -146,7 +208,7 @@ def setup_global_logging():
 
     root_logger = logging.getLogger()
     # When passthrough is disabled, pin existing handlers (e.g. the default StreamHandler)
-    # to WARNING so they don't start emitting DEBUG/INFO after we lower the root level.
+    # to WARNING so they don't start emitting DEBUG/INFO after we adjust the root level.
     # When passthrough is enabled we leave them untouched — they need to keep receiving
     # records so that captured logs also appear on stdout.
     if not _passthrough_enabled():
@@ -155,9 +217,13 @@ def setup_global_logging():
                 existing_handler.setLevel(logging.WARNING)
 
     root_logger.addHandler(handler)
-    # Allow all records to be created and reach our handler.
-    # enqueue_log_event() applies the min_level / prefix filters from ObservabilityConfig.
-    root_logger.setLevel(logging.NOTSET)
+    # Gate the root logger at the observability min_level rather than NOTSET. NOTSET makes
+    # the root's effective level 0, which enables DEBUG for every logger that inherits the
+    # root level (e.g. pymongo heartbeats) — those records get created and flood both our
+    # handler and stdout. Setting the floor to min_level suppresses that noise at the source.
+    # Loggers that explicitly opt into a lower level still create records and propagate to
+    # our handler; enqueue_log_event() applies the finer min_level / prefix / filter checks.
+    root_logger.setLevel(_resolve_min_levelno())
     
     class IntegrationStreamProxy:
         def __init__(self, original_stream, levelno):
