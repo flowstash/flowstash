@@ -231,6 +231,7 @@ def test_get_lease_client_enabled_when_configured(monkeypatch):
 
 def test_derive_broker_url_from_https_api(monkeypatch):
     _reset_client_singleton(monkeypatch)
+    monkeypatch.setenv("LEASE_BROKER_ENABLED", "true")
     monkeypatch.delenv("LEASE_BROKER_URL", raising=False)
     monkeypatch.setenv("MANAGED_API_URL", "https://api.flowstash.dev")
     monkeypatch.setenv("MANAGED_AUTH_TOKEN", "tok")

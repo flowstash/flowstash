@@ -376,7 +376,7 @@ wheels = [
 
 [[package]]
 name = "flowstash"
-version = "0.9.0"
+version = "0.9.2"
 source = { editable = "packages/flowstash" }
 dependencies = [
     { name = "flowstash-cli" },
@@ -395,7 +395,7 @@ requires-dist = [
 
 [[package]]
 name = "flowstash-cli"
-version = "0.9.0"
+version = "0.9.2"
 source = { editable = "packages/flowstash-cli" }
 dependencies = [
     { name = "flowstash-runtime" },
@@ -426,7 +426,7 @@ requires-dist = [
 
 [[package]]
 name = "flowstash-clients"
-version = "0.9.0"
+version = "0.9.2"
 source = { editable = "packages/flowstash_clients" }
 dependencies = [
     { name = "httpx" },
@@ -441,7 +441,7 @@ requires-dist = [
 
 [[package]]
 name = "flowstash-core"
-version = "0.9.0"
+version = "0.9.2"
 source = { virtual = "." }
 dependencies = [
     { name = "cachetools" },
@@ -510,7 +510,7 @@ requires-dist = [
 
 [[package]]
 name = "flowstash-lib"
-version = "0.9.0"
+version = "0.9.2"
 source = { editable = "packages/flowstash_lib" }
 dependencies = [
     { name = "flowstash-clients" },
@@ -535,7 +535,7 @@ requires-dist = [
 
 [[package]]
 name = "flowstash-runtime"
-version = "0.9.0"
+version = "0.9.2"
 source = { editable = "packages/flowstash_runtime" }
 dependencies = [
     { name = "apscheduler" },

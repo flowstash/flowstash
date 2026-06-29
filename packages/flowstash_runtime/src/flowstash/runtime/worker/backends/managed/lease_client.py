@@ -20,6 +20,8 @@ import asyncio
 import json
 import logging
 import os
+import random
+import uuid
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set
 
@@ -83,6 +85,9 @@ class LeaseBrokerClient:
         self._acquire_timeout = acquire_timeout
         self._reconnect_min = reconnect_min
         self._reconnect_max = reconnect_max
+        # Stable per-process identity so a reconnecting worker reclaims (transfers)
+        # its own leases instead of conflicting with its not-yet-reaped old conn.
+        self._worker_id = os.getenv("CLOUD_RUN_EXECUTION") or uuid.uuid4().hex
 
         self._held: Set[str] = set()
         self._waiters: Dict[str, List[asyncio.Future]] = {}
@@ -110,13 +115,17 @@ class LeaseBrokerClient:
             except Exception:
                 pass
 
+    def _connect_url(self) -> str:
+        sep = "&" if "?" in self._url else "?"
+        return f"{self._url}{sep}worker_id={self._worker_id}"
+
     async def _run(self) -> None:
         backoff = self._reconnect_min
         headers = {"Authorization": f"Bearer {self._token}"}
         while not self._closing:
             try:
                 async with websockets.connect(
-                    self._url, additional_headers=headers, open_timeout=10
+                    self._connect_url(), additional_headers=headers, open_timeout=10
                 ) as ws:
                     self._ws = ws
                     backoff = self._reconnect_min
@@ -138,7 +147,9 @@ class LeaseBrokerClient:
                 self._ws = None
             if self._closing:
                 break
-            await asyncio.sleep(backoff)
+            # Jittered backoff so a broker restart doesn't trigger a synchronized
+            # reconnect storm from every worker at once.
+            await asyncio.sleep(backoff * (0.5 + 0.5 * random.random()))
             backoff = min(backoff * 2, self._reconnect_max)
 
     # ── messaging ──────────────────────────────────────────────────────────
@@ -250,8 +261,11 @@ def get_lease_client() -> Optional[LeaseBrokerClient]:
         return _client
     _resolved = True
 
-    if os.getenv("LEASE_BROKER_ENABLED", "true").lower() in ("0", "false", "no"):
-        logger.info("lease broker disabled via LEASE_BROKER_ENABLED")
+    # Default OFF: deploying the worker code is inert until ops explicitly enables
+    # the guard (after the broker is deployed and validated). Otherwise an
+    # unreachable broker would fail every task closed (503).
+    if os.getenv("LEASE_BROKER_ENABLED", "false").lower() not in ("1", "true", "yes"):
+        logger.info("lease broker disabled (set LEASE_BROKER_ENABLED=true to enable)")
         return None
     if websockets is None:
         logger.warning("lease broker disabled: 'websockets' not installed")

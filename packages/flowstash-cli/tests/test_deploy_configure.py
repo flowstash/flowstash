@@ -45,7 +45,7 @@ class FakeAPI:
         if path.endswith("/deployment-config"):
             return self.responses.get(
                 "deployment-config",
-                {"deployment_profile": "micro", "min_worker_instances": 0},
+                {"deployment_profile": "micro", "min_api_instances": 0},
             )
         if path.endswith("/status"):
             if self.status_queue:
@@ -92,7 +92,7 @@ def test_configure_non_interactive_puts_deployment_config(monkeypatch):
     assert path == "/v1/environments/proj-123/prod/deployment-config"
     assert kwargs["json"] == {
         "deployment_profile": "medium",
-        "min_worker_instances": 1,
+        "min_api_instances": 1,
     }
     # --no-apply => apply-profile is never called
     assert not any(c[1].endswith("/apply-profile") for c in fake.calls)
@@ -109,7 +109,7 @@ def test_configure_no_always_on_sets_zero(monkeypatch):
 
     assert result.exit_code == 0, result.stdout
     put = next(c for c in fake.calls if c[0] == "PUT")
-    assert put[2]["json"]["min_worker_instances"] == 0
+    assert put[2]["json"]["min_api_instances"] == 0
 
 
 def test_configure_apply_no_change(monkeypatch):

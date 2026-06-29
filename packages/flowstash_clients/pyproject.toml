@@ -1,6 +1,6 @@
 [project]
 name = "flowstash-clients"
-version = "0.9.2"
+version = "0.9.3"
 description = "Shared client types and API clients for the flowstash managed platform."
 authors = [{name = "juraj.bezdek@gmail.com", email = "juraj.bezdek@gmail.com"}]
 requires-python = ">=3.11"

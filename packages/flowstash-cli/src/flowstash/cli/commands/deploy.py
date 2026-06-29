@@ -294,7 +294,7 @@ def deploy_configure(
     always_on: Optional[bool] = typer.Option(
         None,
         "--always-on/--no-always-on",
-        help="Keep one worker warm (min_worker_instances 1) vs scale to zero (0)",
+        help="Keep one API instance warm (min_api_instances 1) vs scale to zero (0)",
     ),
     apply: Optional[bool] = typer.Option(
         None,
@@ -309,7 +309,7 @@ def deploy_configure(
     """
     [bold cyan]Configure[/bold cyan] the deployment profile and scaling for an environment.
 
-    Interactively pick the environment, deployment profile, and whether the worker
+    Interactively pick the environment, deployment profile, and whether the API
     stays always-on. Provide [bold]--env[/bold], [bold]--profile[/bold] and
     [bold]--always-on/--no-always-on[/bold] to skip the prompts.
     """
@@ -363,7 +363,7 @@ def deploy_configure(
 
     profile_names = [p.get("name") for p in (profiles or []) if p.get("name")]
     current_profile = (current or {}).get("deployment_profile")
-    current_min = (current or {}).get("min_worker_instances") or 0
+    current_min = (current or {}).get("min_api_instances") or 0
 
     # 3. Profile selection
     if profile is None:
@@ -390,12 +390,12 @@ def deploy_configure(
             f"({', '.join(profile_names)}). Sending anyway.[/yellow]"
         )
 
-    # 4. Always-on flag -> min_worker_instances (boolean: 1 / 0)
+    # 4. Always-on flag -> min_api_instances (boolean: 1 / 0)
     if always_on is None:
         always_on = Confirm.ask(
-            "Keep a worker always on (no cold starts)?", default=current_min > 0
+            "Keep the API always on (no cold starts)?", default=current_min > 0
         )
-    min_worker_instances = 1 if always_on else 0
+    min_api_instances = 1 if always_on else 0
 
     # 5. Summary + confirmation
     console.print()
@@ -403,7 +403,7 @@ def deploy_configure(
     console.print(f"  Profile     : [bold]{profile}[/bold]")
     console.print(
         f"  Always on   : [bold]{'yes' if always_on else 'no'}[/bold] "
-        f"(min_worker_instances={min_worker_instances})"
+        f"(min_api_instances={min_api_instances})"
     )
     if not yes and not Confirm.ask("Save this deployment configuration?", default=True):
         console.print("Cancelled.")
@@ -416,7 +416,7 @@ def deploy_configure(
             f"/v1/environments/{project_id}/{env}/deployment-config",
             json={
                 "deployment_profile": profile,
-                "min_worker_instances": min_worker_instances,
+                "min_api_instances": min_api_instances,
             },
         )
 
