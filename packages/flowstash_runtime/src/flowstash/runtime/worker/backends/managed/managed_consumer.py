@@ -411,7 +411,7 @@ class ManagedConsumer(TaskConsumer):
         except ValueError as e:
             logger.error(f"[run-task] {e}")
             await _record_missing_task(task_name)
-            await asyncio.to_thread(AsyncManager.get_instance().flush, 15.0)
+            await asyncio.to_thread(AsyncManager.get_instance().flush, 30.0)
             sys.exit(1)
 
         # Idempotency guard via the lease broker. Unlike HTTP tasks, a job that
@@ -428,7 +428,7 @@ class ManagedConsumer(TaskConsumer):
                     run_id,
                     res.outcome,
                 )
-                await asyncio.to_thread(AsyncManager.get_instance().flush, 15.0)
+                await asyncio.to_thread(AsyncManager.get_instance().flush, 30.0)
                 sys.exit(0)
             elif res.outcome == ACQUIRED:
                 lease_held = True
@@ -450,7 +450,7 @@ class ManagedConsumer(TaskConsumer):
         if lease_held:
             await lease.release(run_id, SUCCEEDED if success else FAILED)
 
-        await asyncio.to_thread(AsyncManager.get_instance().flush, 15.0)
+        await asyncio.to_thread(AsyncManager.get_instance().flush, 30.0)
         sys.exit(0 if success else 1)
 
     async def stop(self) -> None:

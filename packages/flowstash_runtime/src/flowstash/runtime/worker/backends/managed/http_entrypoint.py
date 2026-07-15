@@ -170,7 +170,7 @@ def _get_drain_controller(request: Request) -> ManagedTaskDrainController:
     return controller
 
 
-async def _flush_observability(timeout_s: float = 15.0) -> None:
+async def _flush_observability(timeout_s: float = 30.0) -> None:
     import asyncio
     from flowstash.observability.ingestion import AsyncManager
 
