@@ -17,3 +17,5 @@ logs/
 *.crt
 _*.md
 *_plan.md
+# Sphinx docs build output
+docs/_build/

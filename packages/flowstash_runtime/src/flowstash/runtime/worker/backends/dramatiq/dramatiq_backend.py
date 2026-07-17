@@ -8,6 +8,7 @@ import dramatiq
 import logging
 import asyncio
 import threading
+from datetime import datetime, UTC
 from typing import Any, Callable, Optional, Mapping, List, Union
 from flowstash.queue.backend import JobHandle, TaskBackend, Schedule
 from flowstash.context import IntegrationContext, integration_context, current_context
@@ -244,8 +245,17 @@ class DramatiqBackend(TaskBackend):
         if pipeline:
             headers["fw.pipeline"] = pipeline
 
-        delay = eta_or_delay if isinstance(eta_or_delay, (int, float)) else None
-        # Handle datetime eta if needed...
+        # Framework API expresses numeric delays in seconds; dramatiq wants ms.
+        delay: Optional[int] = None
+        if isinstance(eta_or_delay, (int, float)):
+            delay = max(0, int(eta_or_delay * 1000))
+        elif isinstance(eta_or_delay, datetime):
+            eta = (
+                eta_or_delay
+                if eta_or_delay.tzinfo
+                else eta_or_delay.replace(tzinfo=UTC)
+            )
+            delay = max(0, int((eta - datetime.now(UTC)).total_seconds() * 1000))
 
         message = func.send_with_options(
             args=args, kwargs=kwargs, delay=delay, headers=headers

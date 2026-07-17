@@ -243,6 +243,22 @@ class integration_context:
         return ctx
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        if self._is_root_run and self._last_ctx is not None:
+            # Dispatch any fire-and-forget task invocations created during this
+            # run before the run is recorded as ended.
+            from .decorators import flush_pending_invocations
+
+            try:
+                flush_pending_invocations(run_id=self._last_ctx.run_id)
+            except Exception:
+                if exc_type is None:
+                    raise
+                # The run body is already failing; don't mask its exception.
+                import logging
+
+                logging.getLogger(__name__).exception(
+                    "Failed to dispatch pending task invocations at run exit"
+                )
         if self._record_lifecycle and self._last_ctx is not None:
             from .observability.ingestion import (
                 _enqueue_lifecycle,

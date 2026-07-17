@@ -1,10 +1,11 @@
 [project]
 name = "flowstash-core"
-version = "0.9.3"
+version = "0.10.0"
 description = "A managed integration framework core."
 authors = [
     {name = "juraj.bezdek@gmail.com", email = "juraj.bezdek@gmail.com"}
 ]
+license = "MIT"
 readme = "README.md"
 requires-python = ">=3.11,<4.0"
 dependencies = [
@@ -42,6 +43,17 @@ dependencies = [
 [project.urls]
 Homepage = "https://github.com/flowstash/flowstash"
 Repository = "https://github.com/flowstash/flowstash"
+
+[dependency-groups]
+docs = [
+  "sphinx>=8.0",
+  "furo>=2024.8",
+  "myst-parser>=4.0",
+  "sphinx-design>=0.6",
+  "sphinx-copybutton>=0.5",
+  "sphinxcontrib-mermaid>=1.0",
+  "sphinx-autobuild>=2024.9",
+]
 
 [tool.uv]
 workspace = { members = ["packages/*"] }

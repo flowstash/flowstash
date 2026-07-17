@@ -1,8 +1,9 @@
 [project]
 name = "flowstash-clients"
-version = "0.9.3"
+version = "0.10.0"
 description = "Shared client types and API clients for the flowstash managed platform."
 authors = [{name = "juraj.bezdek@gmail.com", email = "juraj.bezdek@gmail.com"}]
+license = "MIT"
 requires-python = ">=3.11"
 dependencies = [
     "httpx>=0.24.0",

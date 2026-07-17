@@ -1,25 +1,27 @@
 # flowstash
 
-`flowstash` is a convenience meta-package for the [flowstash managed platform](https://github.com/TODO/flowstash). 
+**Think Vercel for integrations and background jobs.**
 
-By installing this package, you will automatically install both:
-- `flowstash-cli`: The Command Line Interface for initialization and deployment.
-- `flowstash-runtime`: The actual runtime engine and worker layer.
+Write the integration, configure the environment, and deploy it — without designing the surrounding runtime from scratch. Webhooks, polling, queues, scheduled jobs, declarative API clients, and correlated observability are part of the framework's execution model, not infrastructure you assemble per project. The same code runs in-process on your laptop, on your own Redis + containers, or on managed cloud infrastructure.
 
-If you only need the CLI, or only the internals (libraries/clients), you can install those packages individually (e.g. `pip install flowstash-cli`).
+This is the convenience meta package. Installing it gives you the full framework:
 
-## Installation
+- `flowstash-lib` — the programming model: tasks, ingress, feeds, state, observability
+- `flowstash-clients` — API clients with auth, retries, and masking
+- `flowstash-runtime` — the FastAPI app builder and worker engine
+- `flowstash-cli` — the `flowstash` command: scaffold, run, build, deploy
+
+## Install
 
 ```bash
 pip install flowstash
 ```
 
-## Usage
-
-Once installed, the `flowstash` command will be available through `flowstash-cli`:
+## Get started
 
 ```bash
-flowstash --help
+flowstash init --name hello
+python api_main.py
 ```
 
-For full documentation and details on how this fits into the larger ecosystem, please refer to the [flowstash Monorepo Root](https://github.com/TODO/flowstash).
+📚 **Documentation:** https://flowstash.github.io/flowstash/ — start with the [quickstart](https://flowstash.github.io/flowstash/getting-started/quickstart/).

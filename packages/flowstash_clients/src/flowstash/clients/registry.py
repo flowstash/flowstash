@@ -82,12 +82,13 @@ _deferred_registrations: List[tuple[str, Type["BaseClient"]]] = []
 
 
 def client(name: str):
-    """
-    Decorator to register a client class.
+    """Register a client class under a name.
 
-    @client("demoClient")
-    class DemoClient("BaseClient"):
-        ...
+    Example::
+
+        @client("demoClient")
+        class DemoClient(HttpClient):
+            ...
     """
 
     def decorator(cls):

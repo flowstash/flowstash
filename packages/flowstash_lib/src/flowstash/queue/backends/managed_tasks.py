@@ -10,6 +10,7 @@ import json
 import logging
 import uuid
 from dataclasses import asdict
+from datetime import datetime, UTC
 from typing import Any, Callable, Optional, Mapping, List, Union, Dict
 
 import httpx
@@ -195,9 +196,16 @@ class ManagedTasksBackend(TaskBackend):
         target_url = f"{self.service_url}/handle_task"
         task_id = self._derive_task_name(func)
 
-        # Convert delay (ms) to absolute schedule_time
+        # Resolve eta_or_delay (seconds from now, or a datetime) to an absolute timestamp
         if isinstance(eta_or_delay, (int, float)):
-            schedule_time = time.time() + (eta_or_delay / 1000.0)
+            schedule_time = time.time() + eta_or_delay
+        elif isinstance(eta_or_delay, datetime):
+            eta = (
+                eta_or_delay
+                if eta_or_delay.tzinfo
+                else eta_or_delay.replace(tzinfo=UTC)
+            )
+            schedule_time = eta.timestamp()
         else:
             schedule_time = None
 

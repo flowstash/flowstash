@@ -1,5 +1,7 @@
+import gc
 import pytest
 import asyncio
+from datetime import datetime, UTC
 from unittest.mock import MagicMock
 from flowstash.decorators import integration_step, integration_task
 from flowstash.context import current_context, integration_context
@@ -126,3 +128,102 @@ def test_integration_task_default_schedule():
     # register_schedule receives the TaskWrapper, not the raw function
     assert args[0] is my_scheduled_task
     assert args[1].cron == "0 * * * *"
+
+
+def test_integration_task_bare_call_submits():
+    """A bare my_task(...) statement still enqueues at end of statement."""
+    mock_backend = MagicMock()
+    set_backend(mock_backend)
+
+    @integration_task(integration="test", integration_pipeline="pipe")
+    def my_task(x):
+        return x
+
+    my_task(41)  # result discarded -> finalizer dispatches immediately on CPython
+    mock_backend.submit.assert_called_once()
+    args, kwargs = mock_backend.submit.call_args
+    assert args[1] == (41,)
+
+
+def test_integration_task_chained_schedule():
+    """my_task(args).schedule(eta_or_delay=...) dispatches once, as a scheduled job."""
+    mock_backend = MagicMock()
+    set_backend(mock_backend)
+
+    @integration_task(integration="test", integration_pipeline="pipe")
+    def my_task(x, y):
+        return x + y
+
+    handle = my_task(1, 2).schedule(eta_or_delay=25 * 60)
+
+    mock_backend.schedule.assert_called_once()
+    mock_backend.submit.assert_not_called()
+    assert handle is mock_backend.schedule.return_value
+
+    args, kwargs = mock_backend.schedule.call_args
+    assert args[1] == (1, 2)
+    assert kwargs["eta_or_delay"] == 25 * 60
+    # schedule_time metadata is interpreted in seconds
+    delegation = kwargs["delegation"]
+    assert delegation.schedule_time is not None
+    delta = (delegation.schedule_time - datetime.now(UTC)).total_seconds()
+    assert 25 * 60 - 5 < delta < 25 * 60 + 5
+
+    # GC of the invocation must not double-dispatch
+    gc.collect()
+    mock_backend.submit.assert_not_called()
+    mock_backend.schedule.assert_called_once()
+
+
+def test_invocation_handle_proxy_submits_once():
+    """Using the returned handle triggers exactly one submit."""
+    mock_backend = MagicMock()
+    set_backend(mock_backend)
+
+    @integration_task(integration="test", integration_pipeline="pipe")
+    def my_task():
+        pass
+
+    h = my_task()
+    mock_backend.submit.assert_not_called()  # lazy while the reference is held
+    assert "pending" in repr(h)
+
+    _ = h.id
+    _ = h.status()
+    mock_backend.submit.assert_called_once()
+    assert "dispatched" in repr(h)
+    assert h.id is mock_backend.submit.return_value.id
+
+
+def test_invocation_schedule_after_use_raises():
+    mock_backend = MagicMock()
+    set_backend(mock_backend)
+
+    @integration_task(integration="test", integration_pipeline="pipe")
+    def my_task():
+        pass
+
+    h = my_task()
+    _ = h.id  # forces a submit
+    with pytest.raises(RuntimeError, match="already"):
+        h.schedule(eta_or_delay=60)
+    mock_backend.schedule.assert_not_called()
+
+
+def test_pending_invocations_flushed_at_run_exit():
+    """Invocations held but never used are dispatched when the root run exits."""
+    mock_backend = MagicMock()
+    set_backend(mock_backend)
+
+    @integration_task(integration="test", integration_pipeline="pipe")
+    def my_task():
+        pass
+
+    holder = []
+    with integration_context(integration="outer", integration_pipeline="op"):
+        holder.append(my_task())  # strong ref: no finalizer until flush
+        mock_backend.submit.assert_not_called()
+
+    mock_backend.submit.assert_called_once()
+    with pytest.raises(RuntimeError, match="already"):
+        holder[0].schedule(eta_or_delay=5)
