@@ -169,6 +169,47 @@ def test_schedule_sends_with_schedule_time(backend):
     assert body.get("schedule_time") is not None
 
 
+@respx.mock
+def test_schedule_serializes_delegation_datetime(backend):
+    """A datetime eta lands in delegation metadata; it must be JSON-encoded.
+
+    Regression: TaskDelegationMetadata.schedule_time is a datetime on the
+    dataclass but Optional[str] on the wire (DelegationMetadataModel), and
+    asdict() left it raw — every .schedule(datetime) call with delegation
+    crashed httpx's JSON encoder.
+    """
+    import json
+    from datetime import datetime, UTC
+    from flowstash.observability.model import TaskDelegationMetadata
+
+    route = respx.post("https://api.test.integrator.com/v1/tasks/submit").mock(
+        return_value=httpx.Response(
+            200,
+            json={"task_id": "sched-790", "status": "submitted"},
+        )
+    )
+
+    eta = datetime(2026, 9, 10, 12, 30, tzinfo=UTC)
+    delegation = TaskDelegationMetadata(
+        parent_run_id="run-1",
+        operation_id="op-1",
+        target_task="mod.task",
+        schedule_time=eta,
+    )
+
+    backend.schedule(
+        func=_dummy_func,
+        args=(),
+        kwargs={},
+        eta_or_delay=eta,
+        delegation=delegation,
+    )
+
+    assert route.called
+    body = json.loads(route.calls[0].request.content)
+    assert body["payload"]["delegation"]["schedule_time"] == eta.isoformat()
+
+
 # ─── ManagedTasksBackend.register_schedule ───────────────────────────
 
 

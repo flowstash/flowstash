@@ -123,6 +123,22 @@ class ManagedTasksBackend(TaskBackend):
         register_task(task_id, wrapper)
         logger.info(f"configure_task: registered '{task_id}'")
 
+    @staticmethod
+    def _serialize_delegation(delegation: Optional[Any]) -> Optional[dict]:
+        """Delegation metadata as a JSON-safe dict.
+
+        ``schedule_time`` is a datetime on the dataclass but a string on the
+        wire (``DelegationMetadataModel``); sending it raw made every
+        ``.schedule(datetime)`` call crash on JSON encoding.
+        """
+        if not delegation:
+            return None
+        data = asdict(delegation)
+        schedule_time = data.get("schedule_time")
+        if isinstance(schedule_time, datetime):
+            data["schedule_time"] = schedule_time.isoformat()
+        return data
+
     def _serialize_args(self, func: Callable, args: tuple, kwargs: dict) -> dict:
         """Serialize function reference and arguments to a JSON-safe payload."""
         func_ref = (
@@ -165,7 +181,7 @@ class ManagedTasksBackend(TaskBackend):
                 # Do NOT pass trigger run_id as execution run_id.
                 # The execution side allocates a fresh run_id.
                 "tags": dict(tags or {}),
-                "delegation": asdict(delegation) if delegation else None,
+                "delegation": self._serialize_delegation(delegation),
             },
         }
 
@@ -222,7 +238,7 @@ class ManagedTasksBackend(TaskBackend):
                 or (context.integration_pipeline if context else None),
                 # Do NOT pass trigger run_id as execution run_id.
                 "tags": dict(tags or {}),
-                "delegation": asdict(delegation) if delegation else None,
+                "delegation": self._serialize_delegation(delegation),
             },
             "schedule_time": schedule_time,
         }

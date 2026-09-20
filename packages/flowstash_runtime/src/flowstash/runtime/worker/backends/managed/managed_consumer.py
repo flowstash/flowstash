@@ -285,6 +285,11 @@ def _build_feed_consumers_payload() -> dict:
                         "max_delay_ms": s.max_delay_ms,
                         "debounce_delay_ms": s.debounce_delay_ms,
                         "max_debounce_window_ms": s.max_debounce_window_ms,
+                        # Always emitted, as null when unset. The platform reads
+                        # the key's *absence* as "this client predates dedupe
+                        # suppression" and disables it, so a client that can
+                        # express an opinion must always say so explicitly.
+                        "dedupe_window_ms": s.dedupe_window_ms,
                     }
                     for s in specs
                 ],

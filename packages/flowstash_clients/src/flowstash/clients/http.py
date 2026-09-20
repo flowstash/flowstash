@@ -595,6 +595,11 @@ class HttpClient(BaseClient):
         files: Optional[Any] = None,
         timeout: Optional[Union[float, httpx.Timeout]] = None,
     ) -> httpx.Response:
+        """Perform an HTTP request.
+
+        ``timeout=None`` means "use the client-wide timeout" (``settings.timeout``).
+        Pass ``httpx.Timeout(None)`` to disable timeouts for a single call.
+        """
         url = self._get_full_url(path)
         headers = headers or {}
         params = params or {}
@@ -658,7 +663,9 @@ class HttpClient(BaseClient):
                     content=content,
                     files=files,
                     cookies=cookies,
-                    timeout=timeout,
+                    timeout=(
+                        httpx.USE_CLIENT_DEFAULT if timeout is None else timeout
+                    ),
                 )
 
                 if response.is_error:

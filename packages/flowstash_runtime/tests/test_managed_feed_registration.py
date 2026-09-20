@@ -36,6 +36,7 @@ def _make_spec(feed_id: str, subscription_name: str, **kwargs) -> ConsumerSpec:
         max_delay_ms=kwargs.get("max_delay_ms", 500),
         rate_limit_per_sec=None,
         concurrency=None,
+        dedupe_window_ms=kwargs.get("dedupe_window_ms"),
     )
 
 
@@ -71,6 +72,9 @@ def test_build_payload_groups_by_feed_id():
         "batch": False,
         "max_batch_size": 100,
         "max_delay_ms": 500,
+        "debounce_delay_ms": 0,
+        "max_debounce_window_ms": 0,
+        "dedupe_window_ms": None,
     }
 
     wb = next(c for c in orders_feed["consumers"] if c["group_name"] == "warehouse_b")
@@ -79,10 +83,39 @@ def test_build_payload_groups_by_feed_id():
         "batch": True,
         "max_batch_size": 50,
         "max_delay_ms": 250,
+        "debounce_delay_ms": 0,
+        "max_debounce_window_ms": 0,
+        "dedupe_window_ms": None,
     }
 
     shipments_feed = next(f for f in payload["feeds"] if f["feed_id"] == "shipments")
     assert len(shipments_feed["consumers"]) == 1
+
+
+def test_dedupe_window_key_is_always_emitted():
+    """The key must be present even when unset, as an explicit null.
+
+    The platform reads an *absent* key as "this client is too old to know about
+    dedupe suppression" and disables it permanently. Dropping the key here (for
+    example by omitting None values) would silently opt every consumer out.
+    """
+    specs = [_make_spec("orders", "warehouse_a")]
+
+    with patch.object(mc, "get_registered_consumers", return_value=specs):
+        payload = _build_feed_consumers_payload()
+
+    consumer = payload["feeds"][0]["consumers"][0]
+    assert "dedupe_window_ms" in consumer
+    assert consumer["dedupe_window_ms"] is None
+
+
+def test_declared_dedupe_window_is_forwarded():
+    specs = [_make_spec("orders", "warehouse_a", dedupe_window_ms=60000)]
+
+    with patch.object(mc, "get_registered_consumers", return_value=specs):
+        payload = _build_feed_consumers_payload()
+
+    assert payload["feeds"][0]["consumers"][0]["dedupe_window_ms"] == 60000
 
 
 # ── 2. Empty registry sends {"feeds": []} ────────────────────────────

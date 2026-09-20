@@ -29,6 +29,8 @@ class ConsumerSpec:
     schedule: Optional[str] = None
     debounce_delay_ms: int = 0  # 0 = disabled; classic (non-batched) consumers only
     max_debounce_window_ms: int = 0  # 0 = default cap; sliding-window upper bound
+    # None = no opinion, platform default applies; 0 = explicitly disabled.
+    dedupe_window_ms: Optional[int] = None
 
 _consumers: List[ConsumerSpec] = []
 
@@ -47,6 +49,7 @@ def feed_consumer(
     schedule: Optional[str] = None,
     debounce_delay_ms: int = 0,
     max_debounce_window_ms: int = 0,
+    dedupe_window_ms: Optional[int] = None,
 ):
 
     """
@@ -57,11 +60,26 @@ def feed_consumer(
         payload, fired once arrivals quiet down for this many ms (sliding window).
     max_debounce_window_ms: upper bound on how long a key can be debounced before
         it is forcibly delivered (0 = use platform default cap).
+    dedupe_window_ms: for classic consumers with no debounce, drop any record whose
+        dedupe_key was already delivered within this many ms. Unlike debounce this
+        delivers the FIRST record immediately and discards the rest permanently —
+        they are not buffered and cannot be recovered. None uses the platform
+        default (5 minutes); set 0 to opt out and receive every publish.
     """
     if debounce_delay_ms and batch:
         raise ValueError(
             "debounce_delay_ms is only supported on classic (non-batched) consumers"
         )
+    if dedupe_window_ms:
+        if batch:
+            raise ValueError(
+                "dedupe_window_ms is only supported on classic (non-batched) consumers"
+            )
+        if debounce_delay_ms:
+            raise ValueError(
+                "dedupe_window_ms cannot be combined with debounce_delay_ms; "
+                "debounce already collapses same-key bursts"
+            )
     def decorator(func: Callable):
         @functools.wraps(func)
         async def async_wrapper(records: Union[RecordData, List[RecordData]], *args, **kwargs):
@@ -160,6 +178,7 @@ def feed_consumer(
             schedule=schedule,
             debounce_delay_ms=debounce_delay_ms,
             max_debounce_window_ms=max_debounce_window_ms,
+            dedupe_window_ms=dedupe_window_ms,
         ))
         
         return target_wrapper
