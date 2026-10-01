@@ -59,9 +59,24 @@ autodoc_mock_imports = [
     "firebase_admin",
 ]
 
-intersphinx_mapping = {
-    "python": ("https://docs.python.org/3", None),
-}
+# Only wire up the stdlib inventory when it's actually reachable. CI runners
+# occasionally see docs.python.org return 5xx/timeouts, and with -W that would
+# fail the whole build over a transient network blip unrelated to our docs.
+intersphinx_mapping = {}
+
+
+def _python_docs_reachable() -> bool:
+    import urllib.request
+
+    try:
+        urllib.request.urlopen("https://docs.python.org/3/objects.inv", timeout=3)
+        return True
+    except Exception:
+        return False
+
+
+if _python_docs_reachable():
+    intersphinx_mapping["python"] = ("https://docs.python.org/3", None)
 
 # -- HTML output (Furo) ------------------------------------------------------
 
