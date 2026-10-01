@@ -21,14 +21,21 @@ class BackendType(str, Enum):
 class DramatiqConfig(BaseModel):
     """Dramatiq backend configuration."""
     redis_url: Optional[str] = None # Redis connection string, overrides REDIS_URL env var if set
-    
+
+    model_config = ConfigDict(populate_by_name=True)
+
+class AsyncConfig(BaseModel):
+    """Asyncio backend configuration."""
+    enable_scheduled_jobs: bool = True  # Set False to skip starting APScheduler for cron-scheduled tasks
+
     model_config = ConfigDict(populate_by_name=True)
 
 class BackendConfig(BaseModel):
     """Configuration for task backend."""
     type: BackendType = BackendType.DRAMATIQ
     dramatiq: Optional[DramatiqConfig] = None
-    
+    async_: Optional[AsyncConfig] = Field(default=None, alias="async")
+
     model_config = ConfigDict(populate_by_name=True)
 
 class WebhooksConfig(BaseModel):

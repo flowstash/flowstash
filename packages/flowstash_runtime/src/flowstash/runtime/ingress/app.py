@@ -36,7 +36,7 @@ def _run_startup_task(task_name: str) -> None:
     )
 
 
-def _make_async_lifespan(rt: Runtime):
+def _make_async_lifespan(rt: Runtime, config: RuntimeConfig):
     """Build a FastAPI lifespan that runs APScheduler and an optional startup task."""
 
     @asynccontextmanager
@@ -44,10 +44,15 @@ def _make_async_lifespan(rt: Runtime):
         scheduler = None
 
         # --- Scheduled tasks ---
+        async_config = config.backend.async_
+        config_enabled = async_config is None or async_config.enable_scheduled_jobs
+
         enabled_raw = (
             os.environ.get("FLOWSTASH_ASYNC_SCHEDULED_ENABLE", "true").strip().lower()
         )
-        scheduling_enabled = enabled_raw not in ("false", "0")
+        env_enabled = enabled_raw not in ("false", "0")
+
+        scheduling_enabled = config_enabled and env_enabled
 
         if scheduling_enabled and getattr(rt.backend, "_scheduled_jobs", None):
             try:
@@ -134,7 +139,8 @@ def create_fastapi_app(
     Create FastAPI app with webhook routes.
 
     For BackendType.ASYNC the app gains a lifespan that:
-    - Starts APScheduler for cron-scheduled tasks (disable with FLOWSTASH_ASYNC_SCHEDULED_ENABLE=false|0)
+    - Starts APScheduler for cron-scheduled tasks (disable via
+      config.backend.async_.enable_scheduled_jobs=False, or FLOWSTASH_ASYNC_SCHEDULED_ENABLE=false|0)
     - Executes a named task once on startup when FLOWSTASH_STARTUP_TASK is set
 
     Args:
@@ -149,7 +155,7 @@ def create_fastapi_app(
 
     # Attach a lifespan: async backend gets scheduler + flush; others get flush only
     if config.backend.type == BackendType.ASYNC:
-        lifespan = _make_async_lifespan(rt)
+        lifespan = _make_async_lifespan(rt, config)
     else:
         lifespan = _flush_lifespan
 

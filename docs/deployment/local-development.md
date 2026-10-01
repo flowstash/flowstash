@@ -12,7 +12,7 @@ export ENVIRONMENT=dev
 python api_main.py
 ```
 
-For most development this **one process is enough**: webhooks, feed consumers, and schedules all execute inside the API service (the asyncio lifespan runs an in-process scheduler; disable with `FLOWSTASH_ASYNC_SCHEDULED_ENABLE=false`). Run `python worker_main.py` separately only when you specifically want the worker path.
+For most development this **one process is enough**: webhooks, feed consumers, and schedules all execute inside the API service (the asyncio lifespan runs an in-process scheduler; disable with `backend.async.enable_scheduled_jobs: false` in config, or `FLOWSTASH_ASYNC_SCHEDULED_ENABLE=false`). Run `python worker_main.py` separately only when you specifically want the worker path.
 
 Two handy environment variables:
 

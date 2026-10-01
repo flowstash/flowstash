@@ -58,7 +58,7 @@ daily_report.submit()         # enqueue now, ahead of schedule
 
 ## Operational notes
 
-- **Where schedules run:** `asyncio` — inside the API process (`FLOWSTASH_ASYNC_SCHEDULED_ENABLE=false` disables); `dramatiq` — inside the worker process; `managed` — on the platform. Deploying to managed prints the registered schedules (`flowstash deploy` output lists task name + cron).
+- **Where schedules run:** `asyncio` — inside the API process (disable with `backend.async.enable_scheduled_jobs: false` in config, or `FLOWSTASH_ASYNC_SCHEDULED_ENABLE=false`); `dramatiq` — inside the worker process; `managed` — on the platform. Deploying to managed prints the registered schedules (`flowstash deploy` output lists task name + cron).
 - **Overlaps:** the scheduler fires on the cron regardless of whether the previous run finished. If a run can outlast its interval, guard with [state](../concepts/state.md) or make the work idempotent.
 - **Observability:** each firing is a run like any other — a silent schedule (no runs recorded at the expected times) is your signal that the scheduler or deploy registration is broken. See [Monitoring & Debugging](monitoring-and-debugging.md).
 

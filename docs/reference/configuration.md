@@ -22,6 +22,8 @@ backend:
   type: dramatiq            # asyncio | dramatiq | managed   (default: dramatiq)
   dramatiq:
     redis_url: ${REDIS_URL} # optional; REDIS_URL env var takes precedence
+  async:
+    enable_scheduled_jobs: true # set false to skip starting the in-process scheduler
 
 webhooks:
   prefix: /webhooks         # mount point for @ingress.webhook routes
@@ -157,7 +159,7 @@ Retryable statuses: `429, 500, 502, 503, 504` (plus connection/timeout errors). 
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `FLOWSTASH_ASYNC_SCHEDULED_ENABLE` | `true` | run schedules in the asyncio API process |
+| `FLOWSTASH_ASYNC_SCHEDULED_ENABLE` | `true` | run schedules in the asyncio API process (also gated by `backend.async.enable_scheduled_jobs`; either one set to false disables) |
 | `FLOWSTASH_STARTUP_TASK` | — | submit one named task at startup (asyncio) |
 | `FLOWSTASH_LOG_PASSTHROUGH` | config | override log passthrough per process |
 | `FLOWSTASH_USER` | — | CLI account selection |
