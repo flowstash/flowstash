@@ -107,7 +107,7 @@ def register_user(
     save_global_config(config)
 
 
-def resolve_credentials(user: Optional[str] = None) -> Optional[str]:
+def resolve_credentials(user: Optional[str] = None, project_root: Optional[Path] = None) -> Optional[str]:
     """
     Resolve an access token using the priority chain:
       1. Explicit user (--user flag)
@@ -121,7 +121,8 @@ def resolve_credentials(user: Optional[str] = None) -> Optional[str]:
     if effective_user:
         return get_token_for_user(effective_user)
 
-    project_config = load_project_config()
+    root = project_root if project_root is not None else find_project_root()
+    project_config = load_project_config(root) if root is not None else None
     if project_config and project_config.linked_user:
         token = get_token_for_user(project_config.linked_user)
         if token:
@@ -173,9 +174,20 @@ def delete_access_token(email: Optional[str] = None) -> None:
             pass
 
 
-def load_project_config() -> Optional[ProjectConfig]:
-    path = Path(PROJECT_CONFIG_FILE)
-    if not path.exists():
+def find_project_root(start_path: Optional[Path] = None) -> Optional[Path]:
+    """Find the nearest actual .flowstash file, evaluating cwd at invocation."""
+    start = (start_path if start_path is not None else Path.cwd()).resolve()
+    for parent in (start, *start.parents):
+        if (parent / PROJECT_CONFIG_FILE).is_file():
+            return parent
+    return None
+
+
+def load_project_config(root: Optional[Path] = None, *, strict: bool = False) -> Optional[ProjectConfig]:
+    path = Path(root) if root is not None else Path(PROJECT_CONFIG_FILE)
+    if path.is_dir():
+        path = path / PROJECT_CONFIG_FILE
+    if not path.is_file():
         return None
 
     try:
@@ -183,6 +195,8 @@ def load_project_config() -> Optional[ProjectConfig]:
             data = yaml.safe_load(f) or {}
             return ProjectConfig(**data)
     except Exception:
+        if strict:
+            raise ValueError(f"Malformed project configuration: {path}") from None
         return None
 
 

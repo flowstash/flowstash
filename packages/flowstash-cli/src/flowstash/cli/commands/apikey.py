@@ -24,7 +24,7 @@ from rich.prompt import Prompt
 from rich.table import Table
 
 from ..core.api_client import APIClient
-from ..core.config import get_access_token, resolve_credentials
+from ..core.config import get_access_token, resolve_credentials, find_project_root, load_project_config
 
 app = typer.Typer(
     name="api-keys",
@@ -33,9 +33,10 @@ app = typer.Typer(
 )
 console = Console()
 
-_VALID_SCOPES = {"observability:ingest", "admin"}
+_VALID_SCOPES = {"observability:ingest", "observability:read", "admin"}
 _SCOPE_DESCRIPTIONS = {
     "observability:ingest": "Write-only ingestion (SDK / workers)",
+    "observability:read": "Read-only managed diagnostics (agents)",
     "admin": "Full management access (CI / automation)",
 }
 
@@ -49,7 +50,8 @@ def _format_ts(ts) -> str:
         return str(ts)
 
 
-def _find_project_root(start_path: Path = Path.cwd()) -> Optional[Path]:
+def _find_project_root(start_path: Optional[Path] = None) -> Optional[Path]:
+    start_path = start_path or Path.cwd()
     for parent in [start_path] + list(start_path.parents):
         if (parent / ".flowstash").exists() or (parent / "pyproject.toml").exists():
             return parent
@@ -104,6 +106,8 @@ def _create_key(
     scope: Optional[str],
     env: Optional[str],
     user: Optional[str] = None,
+    project: Optional[str] = None,
+    write_env: Optional[str] = None,
 ):
     """Shared implementation for 'new' and 'create'."""
     token = resolve_credentials(user=user)
@@ -119,7 +123,7 @@ def _create_key(
             "Key scope:",
             choices=[
                 questionary.Choice(f"{s}  —  {_SCOPE_DESCRIPTIONS[s]}", s)
-                for s in _VALID_SCOPES
+                for s in sorted(_VALID_SCOPES - {"observability:read"})
             ],
             default="observability:ingest",
         ).ask()
@@ -132,6 +136,21 @@ def _create_key(
         )
         raise typer.Exit(code=1)
 
+    # Preserve legacy ingest/admin --env file setup without --project.
+    # Read keys require explicit scope and never write to a file implicitly.
+    restricted_env = env if project or scope == "observability:read" else None
+    if restricted_env and not project:
+        root = find_project_root()
+        try:
+            config = load_project_config(root, strict=True) if root else None
+        except ValueError:
+            console.print("[red]Malformed .flowstash configuration.[/red]")
+            raise typer.Exit(code=2)
+        project = config.project_id if config else None
+        if not project:
+            console.print("[red]An environment restriction requires --project or a linked project.[/red]")
+            raise typer.Exit(code=2)
+
     if scope == "admin" and env:
         console.print(
             "[yellow]Warning: writing an 'admin' key to .env is not recommended. "
@@ -140,7 +159,12 @@ def _create_key(
 
     async def _create():
         api = APIClient(token=token)
-        return await api.post("/v1/api-keys", json={"label": label, "scopes": [scope]})
+        body = {"label": label, "scopes": [scope]}
+        if project:
+            body["project_id"] = project
+        if restricted_env:
+            body["environment"] = restricted_env
+        return await api.post("/v1/api-keys", json=body)
 
     try:
         result = asyncio.run(_create())
@@ -155,14 +179,19 @@ def _create_key(
     console.print(f"   Key ID  : [bold]{result['key_id']}[/bold]")
     console.print(f"   Label   : {label}")
     console.print(f"   Scope   : {scope}")
+    if project:
+        console.print(f"   Project : {project}")
+    if restricted_env:
+        console.print(f"   Env     : {restricted_env}")
     console.print()
     console.print(
         "[bold yellow]⚠  Save this key — it will NOT be shown again:[/bold yellow]"
     )
     console.print(f"\n   [bold cyan]{raw_key}[/bold cyan]\n")
 
-    if env:
-        _write_key_to_env(env, raw_key)
+    target_env = write_env or (env if scope != "observability:read" else None)
+    if target_env:
+        _write_key_to_env(target_env, raw_key)
 
 
 @app.command("new")
@@ -171,17 +200,19 @@ def apikey_new(
         None, "--label", "-l", help="Human-readable label for the key"
     ),
     scope: Optional[str] = typer.Option(
-        None, "--scope", "-s", help="Scope: observability:ingest | admin"
+        None, "--scope", "-s", help="Scope: observability:ingest | observability:read | admin"
     ),
     env: Optional[str] = typer.Option(
-        None, "--env", "-e", help="Write key to this environment's .env file"
+        None, "--env", "-e", help="Restrict read keys to an environment; legacy ingest/admin .env setup"
     ),
     user: Optional[str] = typer.Option(
         None, "--user", "-u", help="Account to use (default: project-linked or current)"
     ),
+    project: Optional[str] = typer.Option(None, "--project", help="Restrict key to a managed project"),
+    write_env: Optional[str] = typer.Option(None, "--write-env", help="Explicitly write key to an environment .env file"),
 ):
     """Create a new API key and optionally write it to an environment .env file."""
-    _create_key(label=label, scope=scope, env=env, user=user)
+    _create_key(label=label, scope=scope, env=env, user=user, project=project, write_env=write_env)
 
 
 @app.command("create")
@@ -190,17 +221,19 @@ def apikey_create(
         None, "--label", "-l", help="Human-readable label for the key"
     ),
     scope: Optional[str] = typer.Option(
-        None, "--scope", "-s", help="Scope: observability:ingest | admin"
+        None, "--scope", "-s", help="Scope: observability:ingest | observability:read | admin"
     ),
     env: Optional[str] = typer.Option(
-        None, "--env", "-e", help="Write key to this environment's .env file"
+        None, "--env", "-e", help="Restrict read keys to an environment; legacy ingest/admin .env setup"
     ),
     user: Optional[str] = typer.Option(
         None, "--user", "-u", help="Account to use (default: project-linked or current)"
     ),
+    project: Optional[str] = typer.Option(None, "--project", help="Restrict key to a managed project"),
+    write_env: Optional[str] = typer.Option(None, "--write-env", help="Explicitly write key to an environment .env file"),
 ):
     """Create a new API key (alias for 'new')."""
-    _create_key(label=label, scope=scope, env=env, user=user)
+    _create_key(label=label, scope=scope, env=env, user=user, project=project, write_env=write_env)
 
 
 @app.command("list")
@@ -235,6 +268,8 @@ def apikey_list(
     table.add_column("Label")
     table.add_column("Prefix")
     table.add_column("Scopes", style="cyan")
+    table.add_column("Project")
+    table.add_column("Environment")
     table.add_column("Created")
     table.add_column("Last Used")
 
@@ -244,6 +279,8 @@ def apikey_list(
             k["label"],
             k["key_prefix"],
             ", ".join(k.get("scopes", [])),
+            k.get("project_id") or "—",
+            k.get("environment") or "—",
             _format_ts(k.get("created_at")),
             _format_ts(k.get("last_used_at")),
         )

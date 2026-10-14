@@ -9,6 +9,8 @@ from .commands import run as run_cmds
 from .commands import webhook as webhook_cmds
 from .commands import apikey as apikey_cmds
 from .commands import client as client_cmds
+from .commands import diagnostics as diagnostic_cmds
+from .core.diagnostics import DiagnosticCommand
 
 from rich.console import Console
 import importlib.metadata
@@ -33,6 +35,10 @@ Run commands below to initialize, build, and deploy your integrations.
     no_args_is_help=True,
     rich_markup_mode="rich",
 )
+
+app.add_typer(diagnostic_cmds.obs_app, name="obs")
+app.add_typer(diagnostic_cmds.builds_app, name="builds")
+app.command("context", cls=DiagnosticCommand)(diagnostic_cmds.context_command)
 
 env_app = typer.Typer(
     name="env",
