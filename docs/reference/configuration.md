@@ -52,7 +52,7 @@ durability: eventual        # eventual | immediate
 storeType: managed          # disabled | console | local | managed   (default: disabled)
 localStorePath: logs        # for storeType: local
 managedApiUrl: null         # falls back to FLOWSTASH_API_URL
-managedApiKey: ${FLOWSTASH_API_KEY}
+managedApiKey: null         # falls back to FLOWSTASH_API_KEY
 projectId: null             # falls back to MANAGED_PROJECT_ID / FLOWSTASH_PROJECT_ID
 flushOnTaskExit: true
 logging:

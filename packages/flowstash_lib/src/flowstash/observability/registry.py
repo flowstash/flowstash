@@ -125,6 +125,12 @@ def configure(config: ObservabilityConfig):
             config.managed_api_url = os.getenv(
                 "FLOWSTASH_API_URL", "https://api.flowstash.com"
             )
+        config.managed_api_key = config.managed_api_key or os.getenv("FLOWSTASH_API_KEY")
+        if not config.managed_api_key:
+            raise ValueError(
+                "Observability: API key is required for MANAGED store. "
+                "Set it via observability.managedApiKey in config or the FLOWSTASH_API_KEY env var."
+            )
 
         project_id = (
             config.project_id
