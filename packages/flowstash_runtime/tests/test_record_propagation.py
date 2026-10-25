@@ -7,7 +7,6 @@ import pytest
 
 import flowstash.runtime.worker.backends.managed.http_entrypoint as http_entrypoint
 from flowstash.context import current_context, integration_context
-from flowstash.observability import record_links as rl
 from flowstash.observability.model import RecordLinkKind, TaskDelegationMetadata
 from flowstash.observability.registry import get_records_store, set_records_store
 from flowstash.propagation import PROPAGATED_RECORD_KEY
@@ -37,10 +36,8 @@ def store():
     previous = get_records_store()
     capture = _CaptureRecords()
     set_records_store(capture)
-    rl._budgets.clear()
     yield capture
     set_records_store(previous)
-    rl._budgets.clear()
 
 
 @pytest.mark.asyncio

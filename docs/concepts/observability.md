@@ -27,7 +27,7 @@ Feeds link records for you. Tasks, polls, and webhooks that call APIs directly c
 
 - Links from your code have kind `LINKED`.
 - A task submitted inside `record_scope` inherits the record; its link carries `source="run:<parent run id>"`.
-- At most 5000 `LINKED` links are kept per run, and each key once. The run's end event records `fw.record_links_accepted` and `fw.record_links_dropped`.
+- Only one record key — the current `record_scope` — ever travels to a submitted task; lists of records stay in the run that linked them.
 
 ## Logging
 

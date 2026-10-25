@@ -69,9 +69,7 @@ from flowstash.records import link_records
 
 results = await asyncio.gather(*(push(u) for u in upcs), return_exceptions=True)
 ok = [u for u, r in zip(upcs, results) if not isinstance(r, BaseException)]
-accepted = link_records(ok, record_type="upc")
-if accepted < len(ok):
-    logger.info("linked %d of %d records (limit or duplicates)", accepted, len(ok))
+link_records(ok, record_type="upc")
 ```
 
 **The record follows the work** — a task submitted inside `record_scope` starts with the same current record and links it to its own run (with `source="run:<parent run id>"`):
@@ -86,12 +84,10 @@ async def on_order(request: Request):
 
 Pass `propagate=False` when the submitted tasks are not about that record. `link_records` never passes anything on.
 
-**Limits**
+**Good to know**
 
 - Keys are `integration:record_type:record_id` — the same as feed keys. Pass `key=` for a custom one.
-- At most 5000 `LINKED` links per run (`FLOWSTASH_RECORD_LINKS_MAX_PER_RUN`). Extra links are dropped with one warning log; `record_scope` still tags logs past the limit.
-- The same key twice in a run is linked once.
-- The run's end event carries `fw.record_links_accepted` and `fw.record_links_dropped`.
+- The context carries at most one record key — the innermost `record_scope`. That one key (capped at 512 bytes) is all that travels to submitted tasks; `link_records` adds nothing to the context, however many records it links.
 - Helpers never block, never raise, and do nothing outside a run.
 
 ## Debugging playbook

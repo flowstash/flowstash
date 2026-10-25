@@ -269,12 +269,6 @@ class integration_context:
                 logging.getLogger(__name__).exception(
                     "Failed to dispatch pending task invocations at run exit"
                 )
-        link_stats = None
-        if self._is_root_run and self._last_ctx is not None:
-            # Free the run's record-link budget; its counts go on the run end.
-            from .observability.record_links import release_link_budget
-
-            link_stats = release_link_budget(self._last_ctx.run_id)
         if self._record_lifecycle and self._last_ctx is not None:
             from .observability.ingestion import (
                 _enqueue_lifecycle,
@@ -287,7 +281,6 @@ class integration_context:
                 status = "FAILED" if exc_type else "SUCCEEDED"
                 base_meta = dict(self.overrides.get("metadata") or {})
                 base_meta["fw.outcome"] = status
-                base_meta.update(link_stats or {})
                 _enqueue_lifecycle(
                     record_run_ended,
                     status=status,

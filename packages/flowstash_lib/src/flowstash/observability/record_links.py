@@ -11,15 +11,12 @@ Public entry points (re-exported from ``flowstash.records``):
 - :func:`link_record` / :func:`link_records` — mark one or many records.
 
 All helpers are synchronous, never block on IO, never raise, and do nothing
-outside a run. Each run keeps at most ``FLOWSTASH_RECORD_LINKS_MAX_PER_RUN``
-(default 5000) ``LINKED`` links; the same key is linked once per run.
+outside a run. Only :func:`record_scope` touches the context, and it holds a
+single record key, so tasks submitted afterwards inherit at most one key.
 """
 
 import dataclasses
 import logging
-import os
-import threading
-from collections import OrderedDict
 from contextlib import contextmanager
 from datetime import datetime, UTC
 from itertools import islice
@@ -38,90 +35,9 @@ logger = logging.getLogger(__name__)
 
 RecordId = Union[str, int]
 
-DEFAULT_MAX_LINKS_PER_RUN = 5000
-MAX_LINKS_ENV = "FLOWSTASH_RECORD_LINKS_MAX_PER_RUN"
-
 # link_records() reads its iterable in chunks of this size, so a generator of
 # many ids is never loaded into memory at once.
 _CHUNK_SIZE = 500
-
-# Upper bound on live budgets. A run that never reaches its exit (hard kill,
-# links emitted after the run ended) would otherwise keep its budget forever.
-_MAX_TRACKED_RUNS = 1000
-
-ACCEPTED_STAT = "fw.record_links_accepted"
-DROPPED_STAT = "fw.record_links_dropped"
-
-
-def _max_links_per_run() -> int:
-    try:
-        return max(0, int(os.getenv(MAX_LINKS_ENV, DEFAULT_MAX_LINKS_PER_RUN)))
-    except ValueError:
-        return DEFAULT_MAX_LINKS_PER_RUN
-
-
-@dataclasses.dataclass
-class _RunLinkBudget:
-    """Per-run limit and dedupe for LINKED record links. Thread-safe."""
-
-    limit: int
-    accepted: int = 0
-    dropped: int = 0
-    seen: set = dataclasses.field(default_factory=set)
-    warned: bool = False
-    lock: threading.Lock = dataclasses.field(default_factory=threading.Lock)
-
-    def take(self, keys: Iterable[str]) -> tuple[list[str], bool]:
-        """Return (keys to link, whether this call hit the limit for the first time)."""
-        accepted: list[str] = []
-        first_drop = False
-        with self.lock:
-            for key in keys:
-                if key in self.seen:
-                    continue
-                if self.accepted >= self.limit:
-                    self.dropped += 1
-                    if not self.warned:
-                        self.warned = True
-                        first_drop = True
-                    continue
-                self.seen.add(key)
-                self.accepted += 1
-                accepted.append(key)
-        return accepted, first_drop
-
-    def stats(self) -> dict:
-        with self.lock:
-            return {ACCEPTED_STAT: self.accepted, DROPPED_STAT: self.dropped}
-
-
-_budgets: "OrderedDict[str, _RunLinkBudget]" = OrderedDict()
-_budgets_lock = threading.Lock()
-
-
-def _budget_for(run_id: str) -> _RunLinkBudget:
-    with _budgets_lock:
-        budget = _budgets.get(run_id)
-        if budget is None:
-            budget = _RunLinkBudget(limit=_max_links_per_run())
-            _budgets[run_id] = budget
-            while len(_budgets) > _MAX_TRACKED_RUNS:
-                _budgets.popitem(last=False)
-        return budget
-
-
-def peek_link_stats(run_id: str) -> Optional[dict]:
-    """Link counts for a live run, or None if the run linked nothing."""
-    with _budgets_lock:
-        budget = _budgets.get(run_id)
-    return budget.stats() if budget is not None else None
-
-
-def release_link_budget(run_id: str) -> Optional[dict]:
-    """Forget a finished run's budget and return its final link counts."""
-    with _budgets_lock:
-        budget = _budgets.pop(run_id, None)
-    return budget.stats() if budget is not None else None
 
 
 def _build_key(
@@ -141,18 +57,8 @@ def _is_blank(record_id: Optional[RecordId]) -> bool:
 
 
 def _emit(ctx: IntegrationContext, keys: list[str], source: Optional[str]) -> int:
-    """Apply the run budget to keys and emit LINKED links for the ones accepted."""
+    """Emit one LINKED link per key for the current run."""
     if not keys:
-        return 0
-    budget = _budget_for(ctx.run_id)
-    accepted, first_drop = budget.take(keys)
-    if first_drop:
-        logger.warning(
-            "Record link limit %d reached for run %s; further record links are dropped",
-            budget.limit,
-            ctx.run_id,
-        )
-    if not accepted:
         return 0
 
     from .ingestion import emit_record_links
@@ -172,10 +78,10 @@ def _emit(ctx: IntegrationContext, keys: list[str], source: Optional[str]) -> in
                 kind=RecordLinkKind.LINKED,
                 source=source,
             )
-            for key in accepted
+            for key in keys
         ]
     )
-    return len(accepted)
+    return len(keys)
 
 
 def link_record(
@@ -224,8 +130,7 @@ def link_records(
         source: Optional free-form origin shown on the links.
 
     Returns:
-        How many new links were accepted. Ids already linked in this run and
-        ids beyond the per-run limit are not counted.
+        How many links were emitted (empty / ``None`` ids are not counted).
 
     Unlike :func:`record_scope`, this does not set a current record and does
     not pass anything to tasks submitted afterwards. Never raises.
@@ -295,8 +200,7 @@ def record_scope(
         The full record key, or None outside a run.
 
     The record is linked on enter, not on success, so failed items show up
-    too. Past the per-run link limit the block still tags logs; it just adds
-    no new link. Safe under ``asyncio.gather``: each task has its own copy of
+    too. Safe under ``asyncio.gather``: each task has its own copy of
     the context.
     """
     ctx = current_context()

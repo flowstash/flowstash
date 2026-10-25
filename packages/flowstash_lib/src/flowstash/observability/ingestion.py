@@ -331,13 +331,6 @@ async def record_run_ended(
     run_metadata = {**(metadata or {})}
     if not run_attrs.get("fw.record_key") and ctx and ctx.current_record_key:
         run_attrs["fw.record_key"] = ctx.current_record_key
-    if corr.run_id:
-        # Runs ended by the worker itself (record_lifecycle=False) record ENDED
-        # while the run's link budget is still alive; surface its counts here.
-        from .record_links import peek_link_stats
-
-        for key, value in (peek_link_stats(corr.run_id) or {}).items():
-            run_metadata.setdefault(key, value)
 
     event = RunEvent(
         event_type="ENDED",

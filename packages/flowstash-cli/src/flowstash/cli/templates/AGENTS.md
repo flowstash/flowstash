@@ -322,7 +322,7 @@ async def push(upc: str):
         await tc.reset_external_ats(upc=upc, qty=qty)
 
 # Many at once — one call, sent in batches in the background
-accepted = link_records(ok_upcs, record_type="upc")
+link_records(ok_upcs, record_type="upc")
 ```
 
 Rules:
@@ -330,7 +330,7 @@ Rules:
 - Use `link_records` to mark a list of records after bulk work. It does not pass anything to tasks submitted later.
 - Both are sync, never block, never raise, and do nothing outside a run.
 - The key is `integration:record_type:record_id` — the same as feed dedupe keys, so links join across integrations. Pass `key=` to `record_scope` / `link_record` for a custom key.
-- Limit: 5000 links per run (`FLOWSTASH_RECORD_LINKS_MAX_PER_RUN`). Extra links are dropped with one warning log; the same key twice in a run counts once. `link_records` returns how many it accepted.
+- The context carries at most one record key (the innermost `record_scope`), so only that key travels to submitted tasks — never a list. `link_records` has no limit on how many records it links, but adds nothing to the context.
 - Don't put lists of ids into the context or tags. To hand many records to a child task, pass the ids as task arguments and call `link_records` in the child.
 - Don't call `enqueue_record_link` or other `flowstash.observability.*` internals.
 

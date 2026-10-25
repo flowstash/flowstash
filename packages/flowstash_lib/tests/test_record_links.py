@@ -1,15 +1,13 @@
-"""record_scope / link_record / link_records: keys, per-run limit and dedupe,
-context handling, and propagation of the current record to submitted tasks."""
+"""record_scope / link_record / link_records: keys, context handling, and
+propagation of the current record to submitted tasks."""
 
 import asyncio
-import logging
 import threading
 
 import pytest
 
 from flowstash.context import current_context, integration_context
 from flowstash.decorators import integration_task
-from flowstash.observability import record_links as rl
 from flowstash.observability.model import RecordLinkKind
 from flowstash.observability.registry import get_records_store, set_records_store
 from flowstash.propagation import (
@@ -49,10 +47,8 @@ def store(monkeypatch):
     previous = get_records_store()
     capture = _CaptureRecords()
     set_records_store(capture)
-    rl._budgets.clear()
     yield capture
     set_records_store(previous)
-    rl._budgets.clear()
 
 
 def _run(**kwargs):
@@ -93,73 +89,12 @@ def test_key_override_and_blank_ids(store):
     assert store.keys() == ["customer:7", "shop:order:3"]
 
 
-def test_link_records_reads_generator_and_dedupes(store):
+def test_link_records_reads_generator_without_limit(store):
     with _run():
-        accepted = link_records((str(i % 700) for i in range(1400)), record_type="upc")
-        again = link_records(["1", "2"], record_type="upc")
+        emitted = link_records((str(i) for i in range(12_000)), record_type="upc")
 
-    assert accepted == 700
-    assert again == 0
-    assert len(store.links) == 700
-
-
-# -- per-run limit ---------------------------------------------------------------
-
-
-def test_limit_drops_extra_links_and_warns_once(store, monkeypatch, caplog):
-    monkeypatch.setenv(rl.MAX_LINKS_ENV, "10")
-    with caplog.at_level(logging.WARNING, logger=rl.__name__):
-        with _run() as ctx:
-            assert link_records(range(8), record_type="upc") == 8
-            assert link_records(range(8, 20), record_type="upc") == 2
-            link_record("99", record_type="upc")
-            assert rl.peek_link_stats(ctx.run_id) == {
-                rl.ACCEPTED_STAT: 10,
-                rl.DROPPED_STAT: 11,
-            }
-
-    assert len(store.links) == 10
-    warnings = [r for r in caplog.records if "limit" in r.getMessage()]
-    assert len(warnings) == 1
-
-
-def test_budget_released_when_run_ends(store):
-    with _run() as ctx:
-        link_record("1", record_type="order")
-        run_id = ctx.run_id
-    assert rl.peek_link_stats(run_id) is None
-
-
-def test_record_scope_tags_past_limit(store, monkeypatch):
-    monkeypatch.setenv(rl.MAX_LINKS_ENV, "1")
-    with _run():
-        with record_scope("1", record_type="order"):
-            pass
-        with record_scope("2", record_type="order") as key:
-            assert current_context().current_record_key == key == "shop:order:2"
-    assert store.keys() == ["shop:order:1"]
-
-
-def test_feed_links_do_not_use_budget(store, monkeypatch):
-    from flowstash.observability.ingestion import enqueue_record_link
-
-    monkeypatch.setenv(rl.MAX_LINKS_ENV, "1")
-
-    async def publish_many(ctx):
-        for i in range(3):
-            await enqueue_record_link(
-                tenant_id=ctx.tenant_id, integration="shop", pipeline="sync",
-                run_id=ctx.run_id, record_key=f"shop:order:{i}",
-                kind=RecordLinkKind.PUBLISHED,
-            )
-
-    with _run() as ctx:
-        asyncio.run(publish_many(ctx))
-        link_records(["a", "b"], record_type="order")
-
-    kinds = [link.kind for link in store.links]
-    assert kinds.count(RecordLinkKind.PUBLISHED) == 3
-    assert kinds.count(RecordLinkKind.LINKED) == 1
+    assert emitted == 12_000
+    assert len(store.links) == 12_000
 
 
 # -- record_scope ------------------------------------------------------------------
@@ -289,27 +224,7 @@ async def test_link_records_does_not_propagate(store, asyncio_backend):
     assert results["record_key"] is None
 
 
-# -- run end stats and transport ---------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_run_end_carries_link_counts(store, monkeypatch):
-    from unittest.mock import MagicMock, patch
-
-    from flowstash.config.observability_config import DurabilityMode, ObservabilityConfig
-    from flowstash.observability.ingestion import record_run_ended, set_observability_config
-
-    monkeypatch.setenv(rl.MAX_LINKS_ENV, "2")
-    set_observability_config(ObservabilityConfig(durability=DurabilityMode.IMMEDIATE))
-    events = MagicMock()
-    with patch("flowstash.observability.ingestion.get_events_store", return_value=events):
-        with _run():
-            link_records(["1", "2", "3"], record_type="order")
-            await record_run_ended()
-
-    event = events.write_run_event.call_args[0][0]
-    assert event.metadata[rl.ACCEPTED_STAT] == 2
-    assert event.metadata[rl.DROPPED_STAT] == 1
+# -- transport ---------------------------------------------------------------------
 
 
 def test_unbuffered_store_writes_off_the_caller_thread(store):

@@ -18,7 +18,6 @@ from flowstash.observability.ingestion import (
     record_run_ended,
     normalize_arguments,
 )
-from flowstash.observability.record_links import peek_link_stats
 from flowstash.propagation import context_kwargs_from_propagation, link_inherited_record
 
 
@@ -449,14 +448,11 @@ class FrameworkContextMiddleware(dramatiq.Middleware):
             if hasattr(self.local, "ctx"):
                 status = "SUCCEEDED" if not exception else "FAILED"
                 # All Dramatiq messages are independent execution runs.
-                # Read link counts now: ctx_mgr.__exit__ below frees the run's
-                # budget before the fired coroutine may get to run.
                 _fire(
                     record_run_ended(
                         status=status,
                         correlation=self.local.ctx.corelation,
                         scheduled_job_id=getattr(self.local, "scheduled_job_id", None),
-                        metadata=peek_link_stats(self.local.ctx.run_id),
                     )
                 )
 
