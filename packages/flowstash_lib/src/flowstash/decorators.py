@@ -199,11 +199,14 @@ class TaskWrapper:
         start_time = datetime.now(UTC)
         normalized_args = normalize_arguments(self.func, args, kwargs)
 
+        from .propagation import extract_propagation
+
         delegation = TaskDelegationMetadata(
             parent_run_id=ctx.run_id,
             operation_id=operation_id,
             target_task=target_task,
             schedule_time=schedule_time,
+            propagated=extract_propagation(ctx),
         )
 
         span_metadata: dict = {

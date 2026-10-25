@@ -18,6 +18,8 @@ from flowstash.observability.ingestion import (
     record_run_ended,
     normalize_arguments,
 )
+from flowstash.observability.record_links import peek_link_stats
+from flowstash.propagation import context_kwargs_from_propagation, link_inherited_record
 
 
 class AsyncRunner(threading.local):
@@ -196,6 +198,9 @@ class DramatiqBackend(TaskBackend):
                 headers["fw.accepted_id"] = delegation.accepted_id
             if delegation.schedule_time:
                 headers["fw.schedule_time"] = delegation.schedule_time.isoformat()
+            propagated = getattr(delegation, "propagated", None)
+            if propagated:
+                headers["fw.propagated"] = dict(propagated)
 
         return headers
 
@@ -369,6 +374,7 @@ class FrameworkContextMiddleware(dramatiq.Middleware):
         scheduled_job_id = headers.get("fw.scheduled_job_id")
         parent_run_id = headers.get("fw.parent_run_id")
         operation_id = headers.get("fw.operation_id")
+        propagated = headers.get("fw.propagated")
 
         # Resolve args/kwargs for normalization
         args = message.args
@@ -388,8 +394,10 @@ class FrameworkContextMiddleware(dramatiq.Middleware):
             operation_id=operation_id,
             attrs={"args": normalized_args},
             record_lifecycle=False,
+            **context_kwargs_from_propagation(propagated),
         )
         ctx = ctx_mgr.__enter__()
+        link_inherited_record(ctx)
 
         self.local.ctx_mgr = ctx_mgr
         self.local.ctx = ctx
@@ -441,11 +449,14 @@ class FrameworkContextMiddleware(dramatiq.Middleware):
             if hasattr(self.local, "ctx"):
                 status = "SUCCEEDED" if not exception else "FAILED"
                 # All Dramatiq messages are independent execution runs.
+                # Read link counts now: ctx_mgr.__exit__ below frees the run's
+                # budget before the fired coroutine may get to run.
                 _fire(
                     record_run_ended(
                         status=status,
                         correlation=self.local.ctx.corelation,
                         scheduled_job_id=getattr(self.local, "scheduled_job_id", None),
+                        metadata=peek_link_stats(self.local.ctx.run_id),
                     )
                 )
 

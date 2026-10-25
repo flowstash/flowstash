@@ -69,9 +69,14 @@ class AsyncioBackend:
             delegation.parent_run_id if delegation else (ctx.run_id if ctx else None)
         )
         operation_id = delegation.operation_id if delegation else None
+        propagated = getattr(delegation, "propagated", None) if delegation else None
 
         async def _run_with_new_run():
             from ..context import _current_ctx as _ctx_var
+            from ..propagation import (
+                context_kwargs_from_propagation,
+                link_inherited_record,
+            )
 
             # Break inherited contextvar so integration_context treats this as a root run.
             token = _ctx_var.set(None)
@@ -86,7 +91,9 @@ class AsyncioBackend:
                     parent_run_id=parent_run_id,
                     operation_id=operation_id,
                     attrs={"args": normalize_arguments(func, args, kwargs)},
-                ):
+                    **context_kwargs_from_propagation(propagated),
+                ) as run_ctx:
+                    link_inherited_record(run_ctx)
                     if asyncio.iscoroutinefunction(func):
                         return await func(*args, **kwargs)
                     else:

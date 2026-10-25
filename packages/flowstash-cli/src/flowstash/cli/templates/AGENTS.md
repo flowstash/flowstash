@@ -9,6 +9,7 @@ flowstash integrations revolve around the following core ideas:
 - **Ingress**: How data enters your pipelines (via Webhooks or Polled schedules).
 - **Clients**: How you make authenticated requests to external APIs.
 - **Records Feed**: How you queue and deduplicate records for processing.
+- **Record links**: How a run says which business records it touched (shown in the run's Records tab).
 - **Project Structure**: How to organize code between API, Worker, and Shared modules.
 
 ## Bringing Data In: Ingress
@@ -307,6 +308,32 @@ async def process_batch_messages(record: RecordData):
     print(f"Began processing {record.record_id} of type {record.record_type}")
     print(f"Data Payload: {record.data}")
 ```
+
+## Labeling Runs with Records
+
+Feeds link records to runs automatically. For plain tasks, polls, and webhooks that call APIs directly, label the run yourself so the run's **Records** tab shows what it touched and "which runs touched order 123?" has an answer.
+
+```python
+from flowstash.records import record_scope, link_records
+
+# One item at a time — links the record AND tags every log inside the block
+async def push(upc: str):
+    with record_scope(upc, record_type="upc"):
+        await tc.reset_external_ats(upc=upc, qty=qty)
+
+# Many at once — one call, sent in batches in the background
+accepted = link_records(ok_upcs, record_type="upc")
+```
+
+Rules:
+- Use `record_scope` when code works on one record (a per-item loop body, a webhook for one order). Tasks submitted inside it inherit the record and link it to their own run; pass `propagate=False` when those tasks are not about this record.
+- Use `link_records` to mark a list of records after bulk work. It does not pass anything to tasks submitted later.
+- Both are sync, never block, never raise, and do nothing outside a run.
+- The key is `integration:record_type:record_id` — the same as feed dedupe keys, so links join across integrations. Pass `key=` to `record_scope` / `link_record` for a custom key.
+- Limit: 5000 links per run (`FLOWSTASH_RECORD_LINKS_MAX_PER_RUN`). Extra links are dropped with one warning log; the same key twice in a run counts once. `link_records` returns how many it accepted.
+- Don't put lists of ids into the context or tags. To hand many records to a child task, pass the ids as task arguments and call `link_records` in the child.
+- Don't call `enqueue_record_link` or other `flowstash.observability.*` internals.
+
 ## Project Structure
 
 A typical flowstash project is organized into three main areas: Configuration, Deployment, and Source Code.

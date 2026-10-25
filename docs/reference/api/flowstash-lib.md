@@ -29,3 +29,10 @@ The core library — decorators, execution context, state, feeds, and observabil
 .. automodule:: flowstash.integration.state
    :members:
 ```
+
+## Records
+
+```{eval-rst}
+.. automodule:: flowstash.records
+   :members: record_scope, link_record, link_records
+```

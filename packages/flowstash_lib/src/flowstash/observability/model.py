@@ -62,6 +62,10 @@ class TaskDelegationMetadata:
     attrs: dict = field(default_factory=dict)
     # ^ Free-form backend-specific metadata (e.g. attrs["scheduled_job_id"] for cron identity).
 
+    propagated: dict = field(default_factory=dict)
+    # ^ Context values the child run inherits (e.g. {"fw.record_key": ...}).
+    #   Built by flowstash.propagation.extract_propagation; small strings only.
+
 
 @dataclass(frozen=True)
 class Run:

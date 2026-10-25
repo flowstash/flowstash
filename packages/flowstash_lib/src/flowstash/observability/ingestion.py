@@ -331,6 +331,13 @@ async def record_run_ended(
     run_metadata = {**(metadata or {})}
     if not run_attrs.get("fw.record_key") and ctx and ctx.current_record_key:
         run_attrs["fw.record_key"] = ctx.current_record_key
+    if corr.run_id:
+        # Runs ended by the worker itself (record_lifecycle=False) record ENDED
+        # while the run's link budget is still alive; surface its counts here.
+        from .record_links import peek_link_stats
+
+        for key, value in (peek_link_stats(corr.run_id) or {}).items():
+            run_metadata.setdefault(key, value)
 
     event = RunEvent(
         event_type="ENDED",
@@ -598,13 +605,40 @@ async def enqueue_record_link(
         source=source,
         event_time=datetime.now(UTC),
     )
+    emit_record_links([link])
 
-    # We need a records store
+
+def emit_record_links(links: list[RecordLink]) -> None:
+    """Hand record links to the records store without blocking the caller.
+
+    A buffered store (the managed API store) only appends to its batching
+    worker, so it is called inline. Any other store does real IO (files,
+    stdout), so the whole list goes to the IO pool as one job. Never raises.
+    """
+    if not links:
+        return
     try:
         store = get_records_store()
-        await AsyncManager.get_instance().execute(store.write_record_link, link)
+        write_many = getattr(store, "write_record_links", None)
+        if not callable(write_many):
+
+            def write_many(items, _store=store):
+                for item in items:
+                    _store.write_record_link(item)
+
+        if getattr(store, "buffered", False):
+            write_many(links)
+            return
+
+        def _job():
+            try:
+                write_many(links)
+            except Exception as e:
+                logger.error(f"Observability record link write failed: {e}", exc_info=True)
+
+        AsyncManager.get_instance()._submit_io(_job)
     except Exception:
-        # Never fail
+        # Observability must never fail execution
         pass
 
 

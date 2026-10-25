@@ -1,9 +1,17 @@
-from typing import Protocol, Tuple
+from typing import List, Protocol, Tuple
 from ..model import RunEvent, SpanEvent, Correlation, DataExchange, RecordLink
 
 class RecordsStore(Protocol):
+    # True when write_record_link only appends to an in-memory buffer, so it is
+    # safe to call on the caller's thread (no IO on the hot path).
+    buffered: bool = False
+
     def write_record_link(self, link: RecordLink) -> None:
         ...
+
+    def write_record_links(self, links: List[RecordLink]) -> None:
+        for link in links:
+            self.write_record_link(link)
 
 
 class EventsStore(Protocol):

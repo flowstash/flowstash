@@ -80,7 +80,10 @@ class ConsoleDataExchangeStore(DataExchangeStore):
 
 class ConsoleRecordsStore(RecordsStore):
     def write_record_link(self, link: RecordLink) -> None:
-        print(f"[OBSERVABILITY] Record Link: {link.record_id} -> {link.integration_id}")
+        print(
+            f"[OBSERVABILITY] Record Link: {link.kind.value if hasattr(link.kind, 'value') else link.kind} "
+            f"{link.record_key} -> run {link.run_id}"
+        )
 
 
 _events_store: EventsStore = NoOpEventsStore()

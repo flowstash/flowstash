@@ -491,14 +491,33 @@ class ApiRecordsStore(RecordsStore):
         self._environment = environment
         self.worker = worker
 
-    def write_record_link(self, link: RecordLink) -> None:
+    @property
+    def buffered(self) -> bool:
+        return self.worker is not None
+
+    def flush(self, timeout: float = 10.0) -> None:
+        """Block until buffered record links have been delivered (or timeout expires)."""
+        if self.worker is not None:
+            self.worker.join(timeout=timeout)
+
+    def _payload(self, link: RecordLink) -> dict:
         payload = _to_json_serializable(link)
         if self._project_id is not None:
             payload["project_id"] = self._project_id
         if self._environment is not None:
             payload["environment"] = self._environment
+        return payload
+
+    def write_record_links(self, links: list[RecordLink]) -> None:
+        for link in links:
+            self.write_record_link(link)
+
+    def write_record_link(self, link: RecordLink) -> None:
+        payload = self._payload(link)
         if self.worker is not None:
-            self.worker.submit("/ingestion/records", payload)
+            # Record links are small and fixed-size; a tight size hint keeps the
+            # byte threshold from flushing them early.
+            self.worker.submit("/ingestion/records", payload, size_hint=512)
             return
         try:
             resp = self.client.post(

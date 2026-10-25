@@ -19,6 +19,9 @@ class IntegrationContext:
     tags: Mapping[str, Any] = field(default_factory=dict)
     tenant_id: str = "default"
     current_record_key: Optional[str] = None
+    # False when record_scope(propagate=False) is active: tasks submitted from
+    # here do not inherit current_record_key.
+    propagate_record: bool = True
     ingress_name: Optional[str] = None
     parent_span_id: Optional[str] = None
     # Causal chain fields — set when this context represents a delegated execution
@@ -116,6 +119,7 @@ class integration_context:
             "integration_pipeline": integration_pipeline,
             "run_id": run_id,
             "tenant_id": tenant_id,
+            "current_record_key": current_record_key,
             "ingress_name": ingress_name,
             "parent_run_id": parent_run_id,
             "operation_id": operation_id,
@@ -162,6 +166,11 @@ class integration_context:
                 "tags": {**parent.tags, **(self.overrides.get("tags") or {})},
                 "current_record_key": self.overrides.get("current_record_key")
                 or parent.current_record_key,
+                "propagate_record": (
+                    parent.propagate_record
+                    if self.overrides.get("propagate_record") is None
+                    else bool(self.overrides["propagate_record"])
+                ),
                 "ingress_name": self.overrides.get("ingress_name")
                 or parent.ingress_name,
                 "parent_span_id": parent.span_id,
@@ -186,6 +195,7 @@ class integration_context:
                 "baggage": self.overrides.get("baggage") or {},
                 "tags": self.overrides.get("tags") or {},
                 "current_record_key": self.overrides.get("current_record_key"),
+                "propagate_record": self.overrides.get("propagate_record") is not False,
                 "ingress_name": self.overrides.get("ingress_name"),
                 # Causal metadata for delegated executions
                 "parent_run_id": self.overrides.get("parent_run_id"),
@@ -259,6 +269,12 @@ class integration_context:
                 logging.getLogger(__name__).exception(
                     "Failed to dispatch pending task invocations at run exit"
                 )
+        link_stats = None
+        if self._is_root_run and self._last_ctx is not None:
+            # Free the run's record-link budget; its counts go on the run end.
+            from .observability.record_links import release_link_budget
+
+            link_stats = release_link_budget(self._last_ctx.run_id)
         if self._record_lifecycle and self._last_ctx is not None:
             from .observability.ingestion import (
                 _enqueue_lifecycle,
@@ -271,6 +287,7 @@ class integration_context:
                 status = "FAILED" if exc_type else "SUCCEEDED"
                 base_meta = dict(self.overrides.get("metadata") or {})
                 base_meta["fw.outcome"] = status
+                base_meta.update(link_stats or {})
                 _enqueue_lifecycle(
                     record_run_ended,
                     status=status,

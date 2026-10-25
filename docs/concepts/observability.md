@@ -10,7 +10,7 @@ Integrations fail in the gaps between systems — a webhook that never arrived, 
 | **Span** | a named phase within a run — each `@integration_step`, nested task, or delegation |
 | **Log** | log lines captured while the run was active, with structured attributes |
 | **Data exchange** | one interaction with an external system: HTTP method, status code, duration, masked headers, request/response payloads |
-| **Record link** | a business record's connection to a run: `PUBLISHED` or `CONSUMED` |
+| **Record link** | a business record's connection to a run: `PUBLISHED` or `CONSUMED` (feeds), or `LINKED` (your code) |
 
 Everything is stitched together by a shared **correlation**: `run_id`, OTel-style `trace_id`/`span_id`, `parent_run_id`/`operation_id` for delegated work, plus integration, pipeline, project, environment, and tags. When task A submits task B on another machine, their runs share a causal chain you can follow in one trace.
 
@@ -20,6 +20,14 @@ Everything is stitched together by a shared **correlation**: `run_id`, OTel-styl
 - Every request through a [client](clients.md) emits a data exchange — with `Authorization` headers, cookies, and secret-looking fields **masked**, and large payloads offloaded to blob storage.
 - Every feed publish/consume emits a record link, so you can ask *"which runs touched order #123?"* — end-to-end record traceability across integrations.
 - Task delegation emits a `DELEGATED` span linking parent and child runs.
+
+## Labeling runs with records
+
+Feeds link records for you. Tasks, polls, and webhooks that call APIs directly can do it with `record_scope` / `link_records` from `flowstash.records` — see [Monitoring & Debugging](../guides/monitoring-and-debugging.md#label-runs-with-records).
+
+- Links from your code have kind `LINKED`.
+- A task submitted inside `record_scope` inherits the record; its link carries `source="run:<parent run id>"`.
+- At most 5000 `LINKED` links are kept per run, and each key once. The run's end event records `fw.record_links_accepted` and `fw.record_links_dropped`.
 
 ## Logging
 
@@ -56,7 +64,7 @@ Querying runs, spans, logs, and record links happens through the managed platfor
 
 ## Performance characteristics
 
-Recording happens off the hot path: events are enqueued to background workers, batched, and flushed on task exit and graceful shutdown (`flushOnTaskExit: true` by default). A failing observability pipeline never fails your integration — capture errors are swallowed by design.
+Recording happens off the hot path: events are enqueued to background workers, batched, and flushed on task exit and graceful shutdown (`flushOnTaskExit: true` by default). A failing observability pipeline never fails your integration — capture errors are swallowed by design. Record links are buffered and sent in batches of up to 500, like logs and spans.
 
 ## Related
 

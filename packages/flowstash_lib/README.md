@@ -6,7 +6,7 @@ The core library of the [FlowStash](https://flowstash.github.io/flowstash/) inte
 - **`@ingress.webhook` / `@ingress.poll`** — HTTP ingress and scheduled polling with durable cursor state
 - **Record feeds** — deduplicated, latest-wins pub/sub for business records (`RecordsFeed`, `@feed_consumer`)
 - **`State`** — scoped key-value persistence for cursors and checkpoints
-- **Observability** — runs, spans, logs, data exchanges, and record links, correlated automatically
+- **Observability** — runs, spans, logs, data exchanges, and record links, correlated automatically; label any run with the records it touched (`record_scope`, `link_records`)
 
 ```python
 from flowstash.pipelines import RecordData, feed_consumer

@@ -92,6 +92,22 @@ def test_record_links_are_batched_to_bulk_route():
     assert body["records"][0]["project_id"] == "p"
 
 
+def test_many_record_links_share_few_bulk_posts():
+    cap = _Capture()
+    w = _worker(cap)
+    store = ApiRecordsStore("https://api.test", "key", project_id="p", worker=w)
+    assert store.buffered is True
+    store.write_record_links([
+        RecordLink(tenant_id="t", run_id="run-1", record_key=f"r-{i}", kind=RecordLinkKind.LINKED)
+        for i in range(250)
+    ])
+    store.flush(timeout=5)
+
+    bodies = cap.bodies("/ingestion/records/bulk")
+    assert len(bodies) == 3
+    assert sum(len(b["records"]) for b in bodies) == 250
+
+
 def test_bulk_route_missing_falls_back_to_single_posts():
     cap = _Capture(status_for=lambda path: 404 if path.endswith("/bulk") else 200)
     w = _worker(cap)

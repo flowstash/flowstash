@@ -28,6 +28,7 @@ from flowstash.observability.ingestion import (
     record_run_ended,
     normalize_arguments,
 )
+from flowstash.propagation import context_kwargs_from_propagation, link_inherited_record
 
 from .drain import ManagedTaskDrainController
 from .task_resolver import (
@@ -59,6 +60,8 @@ class DelegationMetadataModel(BaseModel):
     accepted_id: Optional[str] = None
     schedule_time: Optional[str] = None
     attrs: Dict[str, Any] = Field(default_factory=dict)
+    # Context values inherited from the submitting run (see flowstash.propagation).
+    propagated: Dict[str, str] = Field(default_factory=dict)
 
 
 class ManagedHandleTaskPayload(BaseModel):
@@ -197,10 +200,12 @@ async def _execute_managed_task(payload: TaskPayload) -> dict:
     pipeline = payload.effective_pipeline() or "unknown"
     parent_run_id: Optional[str] = None
     operation_id: Optional[str] = None
+    propagated: Dict[str, str] = {}
     delegation = payload.effective_delegation()
     if delegation:
         parent_run_id = delegation.parent_run_id
         operation_id = delegation.operation_id
+        propagated = delegation.propagated
     tags = payload.effective_tags()
 
     triggered_by = payload.effective_triggered_by()
@@ -255,7 +260,9 @@ async def _execute_managed_task(payload: TaskPayload) -> dict:
             tags=tags,
             attrs={"args": raw_args},
             record_lifecycle=False,
+            **context_kwargs_from_propagation(propagated),
         ) as ctx:
+            link_inherited_record(ctx)
             try:
                 func = _resolve_task_callable(
                     payload.task_name or payload.task_id, func_ref

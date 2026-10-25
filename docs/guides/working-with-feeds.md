@@ -91,6 +91,8 @@ Remember the compaction semantics: you replay the latest state per record, not t
 
 Every publish and every consume emits a **record link** into observability, keyed by the record. To answer "what happened to order o-42?", query the record's links on the managed platform: you'll see the run that published it and every subscription's run that consumed it. See [Monitoring & Debugging](monitoring-and-debugging.md).
 
+Plain tasks that don't use feeds can add their own links with `record_scope` / `link_records` — see [Label runs with records](monitoring-and-debugging.md#label-runs-with-records).
+
 ## Related
 
 - [Feeds & Pipelines](../concepts/feeds-and-pipelines.md) — semantics
