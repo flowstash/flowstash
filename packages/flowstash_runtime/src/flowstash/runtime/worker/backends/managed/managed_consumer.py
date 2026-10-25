@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import sys
+import time
 import traceback
 import uuid
 from typing import Any
@@ -152,6 +153,62 @@ async def _record_missing_task(task_name: str) -> None:
             correlation=ctx.corelation,
             status="FAILED",
             attrs={"error": "Task not found"},
+        )
+
+
+def _log_run_binding(run_id: str, task_name: str) -> None:
+    """Emit one structured line binding this job execution to its run_id.
+
+    Cloud Run turns a JSON stdout line into jsonPayload. The platform's failure
+    sink joins it with job-level failure logs (OOM, timeout, non-zero exit) by
+    execution name, so a hard-killed job still surfaces as FAILED for this run.
+    """
+    record = {
+        "flowstash_run_bind": True,
+        "run_id": run_id,
+        "task": task_name,
+        "obs_scope": os.getenv("FLOWSTASH_OBS_SCOPE"),
+        "execution": os.getenv("CLOUD_RUN_EXECUTION"),
+        "message": f"[run-task] run {run_id} bound to this execution",
+    }
+    print(json.dumps(record), flush=True)
+
+
+def _drain_observability(timeout_s: float | None = None) -> None:
+    """Deliver everything observability still holds before the process exits.
+
+    Waits in slices so progress is visible in the logs. If the deadline passes,
+    whatever is still queued is cancelled and the process exits; this is logged
+    as an error with the counts, since it means data loss.
+    """
+    mgr = AsyncManager.get_instance()
+    timeout_s = timeout_s if timeout_s is not None else float(
+        os.getenv("FLOWSTASH_OBS_DRAIN_TIMEOUT_S", "900")
+    )
+    slice_s = 30.0
+    started = time.monotonic()
+    while True:
+        mgr.flush(min(slice_s, max(1.0, timeout_s - (time.monotonic() - started))))
+        pending = mgr.pending()
+        outstanding = sum(v for v in pending.values() if isinstance(v, int))
+        elapsed = time.monotonic() - started
+        if outstanding == 0:
+            logger.info("[run-task] observability drained in %.1fs", elapsed)
+            return
+        if elapsed >= timeout_s:
+            dropped = mgr.shutdown(cancel_pending=True)
+            logger.error(
+                "[run-task] observability drain deadline (%.0fs) exceeded; "
+                "dropping %d queued write(s). Outstanding at deadline: %s",
+                timeout_s,
+                dropped,
+                pending,
+            )
+            return
+        logger.warning(
+            "[run-task] observability still draining after %.0fs: %s",
+            elapsed,
+            pending,
         )
 
 
@@ -410,6 +467,7 @@ class ManagedConsumer(TaskConsumer):
         # guard collapses duplicate executions of the same logical run.
         run_id = os.getenv("FLOWSTASH_RUN_ID") or str(uuid.uuid4())
         logger.info(f"[run-task] Resolving task: {task_name!r} (run_id={run_id})")
+        _log_run_binding(run_id, task_name)
 
         try:
             func = resolve_function(task_name)
@@ -455,7 +513,10 @@ class ManagedConsumer(TaskConsumer):
         if lease_held:
             await lease.release(run_id, SUCCEEDED if success else FAILED)
 
-        await asyncio.to_thread(AsyncManager.get_instance().flush, 30.0)
+        # The run ENDED event is already on the priority lane; now drain the rest
+        # explicitly instead of letting interpreter shutdown silently wait on the
+        # thread pools (which previously kept a failed job alive for 40+ minutes).
+        await asyncio.to_thread(_drain_observability)
         sys.exit(0 if success else 1)
 
     async def stop(self) -> None:

@@ -144,23 +144,31 @@ def configure(config: ObservabilityConfig):
             )
         environment = os.getenv("ENVIRONMENT")
 
+        # One batching worker shared by all three stores: every event kind is
+        # buffered and shipped in bulk requests instead of one POST per item.
+        from .stores.api_stores import _AsyncWorker
+
+        worker = _AsyncWorker(config.managed_api_url, config.managed_api_key)
         _events_store = ApiEventsStore(
             config.managed_api_url,
             config.managed_api_key,
             project_id=project_id,
             environment=environment,
+            worker=worker,
         )
         _dx_store = ApiDataExchangeStore(
             config.managed_api_url,
             config.managed_api_key,
             project_id=project_id,
             environment=environment,
+            worker=worker,
         )
         _records_store = ApiRecordsStore(
             config.managed_api_url,
             config.managed_api_key,
             project_id=project_id,
             environment=environment,
+            worker=worker,
         )
         _blob_store = ApiBlobStore(config.managed_api_url, config.managed_api_key)
 

@@ -116,10 +116,39 @@ class AsyncManager:
 
             concurrent.futures.wait(pending, timeout=remaining)
 
+    def pending(self) -> dict:
+        """Counts of outstanding work, for drain progress logging."""
+        with self._lock:
+            counts = {
+                "lifecycle": sum(1 for f in self._pending if not f.done()),
+                "store_writes": sum(1 for f in self._io_pending if not f.done()),
+            }
+        try:
+            store = get_events_store()
+            if hasattr(store, "pending"):
+                counts.update(store.pending())
+        except Exception:
+            pass
+        return counts
+
+    def shutdown(self, cancel_pending: bool = False) -> int:
+        """Stop the executors. With cancel_pending, queued (not started) store writes
+        are discarded so the process can exit; returns how many were dropped."""
+        dropped = 0
+        with self._lock:
+            if cancel_pending:
+                dropped = sum(1 for f in self._io_pending if f.cancel())
+                dropped += sum(1 for f in self._pending if f.cancel())
+        self._executor.shutdown(wait=False, cancel_futures=cancel_pending)
+        self._io_executor.shutdown(wait=False, cancel_futures=cancel_pending)
+        return dropped
+
     def flush(self, timeout: float = 10.0) -> None:
         """Block until all pending observability work completes (or timeout expires).
 
-        Three-level drain:
+        Drain order:
+          0. Run ENDED batches already on the store's priority lane, so a run's
+             final status lands before anything else is waited on.
           1. _executor trampoline threads (lifecycle coroutine runners).
           2. _io_executor store-write threads submitted via execute().
           3. The store's own internal delivery queue (e.g. ApiEventsStore HTTP queue).
@@ -127,6 +156,14 @@ class AsyncManager:
         Safe to call from any thread (sync). Called during graceful shutdown.
         """
         deadline = time.monotonic() + timeout
+
+        # Level 0: terminal run events first
+        try:
+            store = get_events_store()
+            if hasattr(store, "flush_terminal"):
+                store.flush_terminal(timeout=max(0.0, min(timeout, deadline - time.monotonic())))
+        except Exception:
+            pass
 
         # Level 1: wait for lifecycle trampoline threads
         self._wait_for_tracked("_pending", deadline)
@@ -305,7 +342,11 @@ async def record_run_ended(
         attrs=run_attrs,
         metadata=run_metadata,
     )
-    await AsyncManager.get_instance().execute(get_events_store().write_run_event, event)
+    # Terminal event: bypass the shared store-write queue. That queue is FIFO and
+    # may hold thousands of data-exchange writes from a long run; an ENDED stuck
+    # behind them is lost when the process exits. The API store ships ENDED on a
+    # priority lane; other stores just get a direct call off the event loop.
+    await asyncio.to_thread(get_events_store().write_run_event, event)
 
 
 async def record_run_scheduled(

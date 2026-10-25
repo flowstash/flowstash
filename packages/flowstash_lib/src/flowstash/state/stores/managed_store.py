@@ -54,6 +54,19 @@ class ManagedStateStore:
             h["X-API-Key"] = f"{self._api_key}"
         return h
 
+    @staticmethod
+    def _rejection_reason(resp: httpx.Response) -> str:
+        """Short, human-readable reason from a 4xx response (API `detail` or body)."""
+        try:
+            detail = resp.json().get("detail")
+            if isinstance(detail, str) and detail:
+                return detail
+            if detail:
+                return json.dumps(detail)[:500]
+        except Exception:
+            pass
+        return (resp.text or "").strip()[:500] or resp.reason_phrase or "no details"
+
     def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
         url = f"{self._base_url}{path}"
         last_exc: Optional[Exception] = None
@@ -65,6 +78,15 @@ class ManagedStateStore:
                 if resp.status_code in (429,) or resp.status_code >= 500:
                     time.sleep(self._RETRY_DELAY_S * (2**attempt))
                     continue
+                if resp.status_code in (401, 403):
+                    raise PermissionError(f"ManagedStateStore: auth error {resp.status_code}")
+                if resp.status_code >= 400 and resp.status_code != 404:
+                    # Permanent rejection (e.g. 400 state value too large). Not
+                    # retried; surface the API's explanation, not the raw body.
+                    raise ValueError(
+                        f"ManagedStateStore: {method} {path} rejected with "
+                        f"{resp.status_code}: {self._rejection_reason(resp)}"
+                    )
                 return resp
             except (httpx.TimeoutException, httpx.NetworkError) as exc:
                 last_exc = exc
